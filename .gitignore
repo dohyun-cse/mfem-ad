@@ -1,0 +1,26 @@
+*
+!/**/
+!*.*
+
+
+.*
+!.gitignore
+*.o
+
+# ignore mesh, gridfunction (parallel)
+*.mesh
+*.gf
+*.[0-9]+
+
+# ignore data files
+results/
+data/
+**/ParaView/
+build/
+
+compile_commands.json
+**/*.cmake
+**/CMakeFiles/
+**/CmakeCache.txt
+**/*.a
+user.cmake
