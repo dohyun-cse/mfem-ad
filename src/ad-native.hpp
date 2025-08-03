@@ -4,7 +4,8 @@
 
 namespace mfem
 {
-inline void ADFunction::Gradient(const Vector &x, const Vector &param, Vector &J) const
+inline void ADFunction::Gradient(const Vector &x, const Vector &param,
+                                 Vector &J) const
 {
    MFEM_ASSERT(x.Size() == n_inputs,
                "ADFunction::Gradient: x.Size() must match n_inputs");
@@ -22,7 +23,7 @@ inline void ADFunction::Gradient(const Vector &x, const Vector &param, Vector &J
 }
 
 inline void ADFunction::Hessian(const Vector &x, const Vector &param,
-                         DenseMatrix &H) const
+                                DenseMatrix &H) const
 {
    MFEM_ASSERT(x.Size() == n_inputs,
                "ADFunction::Hessian: x.Size() must match n_inputs");
@@ -60,7 +61,8 @@ real_t ADNonlinearFormIntegrator<mode>::GetElementEnergy(
 
    real_t energy = 0.0;
 
-   int shapedim = int(mode & ADEvalInput::VALUE) + int(mode & ADEvalInput::GRAD) * sdim;
+   int shapedim = int(mode & ADEvalInput::VALUE) + int(mode & ADEvalInput::GRAD) *
+                  sdim;
    allshapes.SetSize(dof, shapedim);
 
    if constexpr (hasFlag(mode, ADEvalInput::VALUE))
@@ -140,8 +142,8 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
    x.SetSize(f.n_input);
    j.SetSize(f.n_input);
 
-   int shapedim = hasFlag(mode, ADEvalInput::VALUE) + hasFlag(mode, ADEvalInput::GRAD) * sdim;
-   out << shapedim << std::endl;
+   int shapedim = hasFlag(mode, ADEvalInput::VALUE) + hasFlag(mode,
+                  ADEvalInput::GRAD) * sdim;
    allshapes.SetSize(dof, shapedim);
 
    if constexpr (hasFlag(mode, ADEvalInput::VALUE))
@@ -150,7 +152,8 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
    }
    if constexpr (hasFlag(mode, ADEvalInput::GRAD))
    {
-      dshape.UseExternalData(allshapes.GetData() + dof*hasFlag(mode, ADEvalInput::VALUE),
+      dshape.UseExternalData(allshapes.GetData() + dof*hasFlag(mode,
+                             ADEvalInput::VALUE),
                              dof, sdim);
    }
 
@@ -189,9 +192,6 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
       else { allshapes.MultTranspose(elfun, x); }
 
       f.Gradient(x, param, j);
-      elfun.Print();
-      x.Print();
-      j.Print();
       j *= w;
 
       if constexpr (hasFlag(mode, ADEvalInput::VECTOR))
@@ -226,11 +226,13 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
    elmat.SetSize(dof*vdim);
    elmat = 0.0;
 
+   int shapedim = (hasFlag(mode, ADEvalInput::VALUE)) + (hasFlag(mode,
+                  ADEvalInput::GRAD)) * sdim;
+   allshapes.SetSize(dof, shapedim);
+
    x.SetSize(f.n_input);
    H.SetSize(f.n_input);
-
-   int shapedim = (hasFlag(mode, ADEvalInput::VALUE)) + (hasFlag(mode, ADEvalInput::GRAD)) * sdim;
-   allshapes.SetSize(dof, shapedim);
+   Hx.SetSize(dof*vdim, shapedim);
 
    if constexpr (hasFlag(mode, ADEvalInput::VALUE))
    {
@@ -238,7 +240,8 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
    }
    if constexpr (hasFlag(mode, ADEvalInput::GRAD))
    {
-      dshape.UseExternalData(allshapes.GetData() + dof*(hasFlag(mode, ADEvalInput::VALUE)),
+      dshape.UseExternalData(allshapes.GetData()
+                             + dof*(hasFlag(mode, ADEvalInput::VALUE)),
                              dof, sdim);
    }
 
@@ -281,10 +284,12 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
       if constexpr (hasFlag(mode, ADEvalInput::VECTOR))
       {
          AddMult(allshapes, H, elmat);
+         MFEM_ABORT("NOT YET IMPLEMENTED");
       }
       else
       {
-         AddMult(allshapes, H, elmat);
+         Mult(allshapes, H, Hx);
+         AddMultABt(allshapes, Hx, elmat);
       }
    }
    // out << "ADNonlinearFormIntegrator::AssembleElementGrad: "

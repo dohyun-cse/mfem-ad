@@ -25,7 +25,8 @@ set(LIB
 # put your executables (relative to ./) here.
 set(EXECUTABLES
   ex0
-  ex0p
+  ex1
+  ex2
 )
 # Again, if an executable depends on a specific library, put them like this:
 # set(EXE_DEP_myexe dependent_lib1 dependent_lib2)

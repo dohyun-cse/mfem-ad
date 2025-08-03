@@ -203,6 +203,10 @@ protected:
 private:
 };
 
+MAKE_AD_FUNCTION(MassEnergy, T, V, M, x, dummy,
+{
+   return 0.5*(x*x);
+});
 MAKE_AD_FUNCTION(DiffusionEnergy, T, V, M, gradu, dummy,
 {
    return 0.5*(gradu*gradu);
