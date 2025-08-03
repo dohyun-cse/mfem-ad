@@ -46,9 +46,9 @@ int main(int argc, char *argv[])
    Vector x({0.5, 1.0, -1.0});
    Vector param({});
 
-   // Vector jac, jac_ref;
-   // f.Gradient(x, param, jac);
-   // jacobian(x, jac_ref);
+   Vector jac, jac_ref;
+   f.Gradient(x, param, jac);
+   jacobian(x, jac_ref);
 
    DenseMatrix hess, hess_ref;
    f.Hessian(x, param, hess);
@@ -56,12 +56,12 @@ int main(int argc, char *argv[])
 
    out << "Value : " << f(x, param) << std::endl;
 
-   // out << "Jacobian  : ";
-   // for (auto & j : jac) { out << j << " "; }
-   // out << std::endl;
-   // out << "Reference : ";
-   // for (auto & j : jac_ref) { out << j << " "; }
-   // out << std::endl;
+   out << "Jacobian  : ";
+   for (auto & j : jac) { out << j << " "; }
+   out << std::endl;
+   out << "Reference : ";
+   for (auto & j : jac_ref) { out << j << " "; }
+   out << std::endl;
 
    out << "Hessian : " << std::endl;
    for (int i = 0; i < hess.Height(); i++)
@@ -83,8 +83,11 @@ int main(int argc, char *argv[])
       }
       out << "; ";
    }
+   hess -= hess_ref;
 
    out << std::endl;
+   out << "Jacobian error: " << jac.DistanceTo(jac_ref) << std::endl;
+   out << "Hessian error: " << hess.MaxMaxNorm() << std::endl;
 
    return 0;
 }

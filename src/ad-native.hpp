@@ -33,7 +33,7 @@ inline void ADFunction::Hessian(const Vector &x, const Vector &param,
    for (int i=0; i<x.Size(); i++) // Loop for the first derivative
    {
       x_ad[i].value.gradient = 1.0;
-      for (int j=0; j<i; j++)
+      for (int j=0; j<=i; j++)
       {
          x_ad[j].gradient = ADReal_t{1.0, 0.0};
          AD2Real_t result = (*this)(x_ad, param);
@@ -125,6 +125,8 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
    ElementTransformation &Tr,
    const Vector &elfun, Vector &elvect)
 {
+   // out << "ADNonlinearFormIntegrator::AssembleElementVector: "
+   //     << "mode = " << static_cast<int>(mode) << std::endl;
    const int dof = el.GetDof();
    const int order = el.GetOrder();
 
@@ -139,6 +141,7 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
    j.SetSize(f.n_input);
 
    int shapedim = hasFlag(mode, ADEvalInput::VALUE) + hasFlag(mode, ADEvalInput::GRAD) * sdim;
+   out << shapedim << std::endl;
    allshapes.SetSize(dof, shapedim);
 
    if constexpr (hasFlag(mode, ADEvalInput::VALUE))
@@ -186,6 +189,9 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
       else { allshapes.MultTranspose(elfun, x); }
 
       f.Gradient(x, param, j);
+      elfun.Print();
+      x.Print();
+      j.Print();
       j *= w;
 
       if constexpr (hasFlag(mode, ADEvalInput::VECTOR))
@@ -197,6 +203,8 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
          allshapes.AddMult(j, elvect);
       }
    }
+   // out << "ADNonlinearFormIntegrator::AssembleElementVector: "
+   //     << "mode = " << static_cast<int>(mode) << " done." << std::endl;
 }
 
 /// Assemble the local <H_f(x)(u), v>
@@ -206,6 +214,8 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
    ElementTransformation &Tr,
    const Vector &elfun, DenseMatrix &elmat)
 {
+   // out << "ADNonlinearFormIntegrator::AssembleElementGrad: "
+   //     << "mode = " << static_cast<int>(mode) << std::endl;
    const int dof = el.GetDof();
    const int order = el.GetOrder();
 
@@ -277,6 +287,8 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
          AddMult(allshapes, H, elmat);
       }
    }
+   // out << "ADNonlinearFormIntegrator::AssembleElementGrad: "
+   //     << "mode = " << static_cast<int>(mode) << " done." << std::endl;
 }
 
 /// @brief Perform the local action of the NonlinearFormIntegrator resulting
