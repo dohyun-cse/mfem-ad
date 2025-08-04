@@ -59,7 +59,7 @@ int main(int argc, char *argv[])
    MinimalSurfaceEnergy energy(dim);
 
    NonlinearForm nlf(&fes);
-   nlf.AddDomainIntegrator(new ADNonlinearFormIntegrator<ADEvalInput::GRAD>
+   nlf.AddDomainIntegrator(new ADNonlinearFormIntegrator<false, ADEval::GRAD>
                            (energy));
    nlf.SetEssentialBC(is_bdr_ess);
 

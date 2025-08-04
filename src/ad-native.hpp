@@ -46,8 +46,8 @@ inline void ADFunction::Hessian(const Vector &x, const Vector &param,
    }
 }
 
-template <ADEvalInput mode>
-inline int ADNonlinearFormIntegrator<mode>::InitInputShapes(
+template <bool is_param_cf, ADEval mode>
+inline int ADNonlinearFormIntegrator<is_param_cf, mode>::InitInputShapes(
    const FiniteElement &el,
    ElementTransformation &Tr,
    DenseMatrix &shapes,
@@ -55,52 +55,52 @@ inline int ADNonlinearFormIntegrator<mode>::InitInputShapes(
    DenseMatrix &grad_shapes)
 {
    const int sdim = Tr.GetSpaceDim();
-   const int shapedim = (hasFlag(mode, ADEvalInput::VALUE) ? 1 : 0)
-                        + (hasFlag(mode, ADEvalInput::GRAD) ? sdim : 0);
+   const int shapedim = (hasFlag(mode, ADEval::VALUE) ? 1 : 0)
+                        + (hasFlag(mode, ADEval::GRAD) ? sdim : 0);
    const int dof = el.GetDof();
    shapes.SetSize(dof, shapedim);
 
-   if constexpr (hasFlag(mode, ADEvalInput::VALUE))
+   if constexpr (hasFlag(mode, ADEval::VALUE))
    {
       shapes.GetColumnReference(0, value_shapes);
    }
-   if constexpr (hasFlag(mode, ADEvalInput::GRAD))
+   if constexpr (hasFlag(mode, ADEval::GRAD))
    {
       grad_shapes.UseExternalData(shapes.GetData()
-                                  + dof*(hasFlag(mode, ADEvalInput::VALUE)),
+                                  + dof*(hasFlag(mode, ADEval::VALUE)),
                                   dof, sdim);
    }
    return shapedim;
 }
 
-template <ADEvalInput mode>
-inline void ADNonlinearFormIntegrator<mode>::CalcInputShapes(
+template <bool is_param_cf, ADEval mode>
+inline void ADNonlinearFormIntegrator<is_param_cf, mode>::CalcInputShapes(
    const FiniteElement &el,
    ElementTransformation &Tr,
    const IntegrationPoint &ip,
-   VectorCoefficient *parameter_cf,
+   std::shared_ptr<VectorCoefficient> &parameter_cf,
    Vector &parameter,
    Vector &value_shapes,
    DenseMatrix &grad_shapes)
 {
-   if constexpr (hasFlag(mode, ADEvalInput::PARAM))
+   if constexpr (is_param_cf)
    {
-      MFEM_ASSERT(parameter_cf == nullptr,
+      MFEM_ASSERT(parameter_cf.get() == nullptr,
                   "ADNonlinearFormIntegrator: "
-                  "param_cf should be set before AssembleElement...");
+                  "Parameter coefficient should be set before AssembleElement...");
       parameter_cf->Eval(parameter, Tr, ip);
    }
 
    // Get value shape
-   if constexpr (hasFlag(mode, ADEvalInput::VALUE)) { el.CalcPhysShape(Tr, value_shapes); }
+   if constexpr (hasFlag(mode, ADEval::VALUE)) { el.CalcPhysShape(Tr, value_shapes); }
 
    // Get gradient shape
-   if constexpr (hasFlag(mode, ADEvalInput::GRAD)) { el.CalcPhysDShape(Tr, grad_shapes); }
+   if constexpr (hasFlag(mode, ADEval::GRAD)) { el.CalcPhysDShape(Tr, grad_shapes); }
 }
 
 /// Perform the local action of the NonlinearFormIntegrator
-template<ADEvalInput mode>
-real_t ADNonlinearFormIntegrator<mode>::GetElementEnergy(
+template <bool is_param_cf, ADEval mode>
+real_t ADNonlinearFormIntegrator<is_param_cf, mode>::GetElementEnergy(
    const FiniteElement &el,
    ElementTransformation &Tr,
    const Vector &elfun)
@@ -115,14 +115,14 @@ real_t ADNonlinearFormIntegrator<mode>::GetElementEnergy(
 
    int shapedim = InitInputShapes(el, Tr, allshapes, shape, dshape);
    x.SetSize(f.n_input);
-   if constexpr (hasFlag(mode, ADEvalInput::VECTOR))
+   if constexpr (hasFlag(mode, ADEval::VECTOR))
    {
       elfun_matview.UseExternalData(const_cast<real_t*>(elfun.GetData()),
                                     dof, vdim);
       xmat.UseExternalData(x.GetData(), f.n_input / vdim, vdim);
    }
 
-   const IntegrationRule * ir = GetIntegrationRule(el, el, Tr);
+   const IntegrationRule * ir = GetIntegrationRule(el, Tr);
    for (int i = 0; i < ir->GetNPoints(); i++)
    {
       const IntegrationPoint &ip = ir->IntPoint(i);
@@ -130,7 +130,7 @@ real_t ADNonlinearFormIntegrator<mode>::GetElementEnergy(
 
       CalcInputShapes(el, Tr, ip, param_cf, param, shape, dshape);
 
-      if constexpr (hasFlag(mode, ADEvalInput::VECTOR))
+      if constexpr (hasFlag(mode, ADEval::VECTOR))
       {
          MultAtB(allshapes, elfun_matview, xmat);
       }
@@ -144,8 +144,8 @@ real_t ADNonlinearFormIntegrator<mode>::GetElementEnergy(
 }
 
 /// Compute the local <grad f, v>
-template<ADEvalInput mode>
-void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
+template <bool is_param_cf, ADEval mode>
+void ADNonlinearFormIntegrator<is_param_cf, mode>::AssembleElementVector(
    const FiniteElement &el,
    ElementTransformation &Tr,
    const Vector &elfun, Vector &elvect)
@@ -165,7 +165,7 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
 
    int shapedim = InitInputShapes(el, Tr, allshapes, shape, dshape);
 
-   if constexpr (hasFlag(mode, ADEvalInput::VECTOR))
+   if constexpr (hasFlag(mode, ADEval::VECTOR))
    {
       elfun_matview.UseExternalData(const_cast<real_t*>(elfun.GetData()),
                                     dof, vdim);
@@ -174,14 +174,14 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
       jmat.UseExternalData(j.GetData(), f.n_input / vdim, vdim);
    }
 
-   const IntegrationRule * ir = GetIntegrationRule(el, el, Tr);
+   const IntegrationRule * ir = GetIntegrationRule(el, Tr);
    for (int i = 0; i < ir->GetNPoints(); i++)
    {
       const IntegrationPoint &ip = ir->IntPoint(i);
       Tr.SetIntPoint(&ip);
       w = ip.weight * Tr.Weight();
 
-      if constexpr (hasFlag(mode, ADEvalInput::PARAM))
+      if constexpr (is_param_cf)
       {
          MFEM_ASSERT(param_cf == nullptr,
                      "ADNonlinearFormIntegrator: "
@@ -192,13 +192,13 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
       CalcInputShapes(el, Tr, ip, param_cf, param, shape, dshape);
 
       // Convert dof to x = [[value, grad], [value, grad], ...]
-      if constexpr (hasFlag(mode, ADEvalInput::VECTOR)) { MultAtB(allshapes, elfun_matview, xmat); }
+      if constexpr (hasFlag(mode, ADEval::VECTOR)) { MultAtB(allshapes, elfun_matview, xmat); }
       else { allshapes.MultTranspose(elfun, x); }
 
       f.Gradient(x, param, j);
       j *= w;
 
-      if constexpr (hasFlag(mode, ADEvalInput::VECTOR))
+      if constexpr (hasFlag(mode, ADEval::VECTOR))
       {
          AddMult(allshapes, jmat, elvectmat);
       }
@@ -210,8 +210,8 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
 }
 
 /// Assemble the local <H_f(x)(u), v>
-template<ADEvalInput mode>
-void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
+template <bool is_param_cf, ADEval mode>
+void ADNonlinearFormIntegrator<is_param_cf, mode>::AssembleElementGrad(
    const FiniteElement &el,
    ElementTransformation &Tr,
    const Vector &elfun, DenseMatrix &elmat)
@@ -233,7 +233,7 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
    Hx.SetSize(dof, shapedim*vdim*vdim);
 
 
-   if constexpr (hasFlag(mode, ADEvalInput::VECTOR))
+   if constexpr (hasFlag(mode, ADEval::VECTOR))
    {
       elfun_matview.UseExternalData(const_cast<real_t*>(elfun.GetData()),
                                     dof, vdim);
@@ -242,7 +242,7 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
       Hs.UseExternalData(H.GetData(), f.n_input / vdim, vdim*f.n_input);
    }
 
-   const IntegrationRule * ir = GetIntegrationRule(el, el, Tr);
+   const IntegrationRule * ir = GetIntegrationRule(el, Tr);
    for (int i = 0; i < ir->GetNPoints(); i++)
    {
       const IntegrationPoint &ip = ir->IntPoint(i);
@@ -251,13 +251,13 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
       CalcInputShapes(el, Tr, ip, param_cf, param, shape, dshape);
 
       // Convert dof to x = [[value, grad], [value, grad], ...]
-      if constexpr (hasFlag(mode, ADEvalInput::VECTOR)) { MultAtB(allshapes, elfun_matview, xmat); }
+      if constexpr (hasFlag(mode, ADEval::VECTOR)) { MultAtB(allshapes, elfun_matview, xmat); }
       else { allshapes.MultTranspose(elfun, x); }
 
       f.Hessian(x, param, H);
       H *= w;
 
-      if constexpr (hasFlag(mode, ADEvalInput::VECTOR))
+      if constexpr (hasFlag(mode, ADEval::VECTOR))
       {
          Mult(allshapes, Hs, Hx);
          const int nel = shapedim*dof;
@@ -285,8 +285,8 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
 
 /// @brief Perform the local action of the NonlinearFormIntegrator resulting
 /// from a face integral term.
-template<ADEvalInput mode>
-void ADNonlinearFormIntegrator<mode>::AssembleFaceVector(
+template <bool is_param_cf, ADEval mode>
+void ADNonlinearFormIntegrator<is_param_cf, mode>::AssembleFaceVector(
    const FiniteElement &el1,
    const FiniteElement &el2,
    FaceElementTransformations &Tr,
@@ -299,11 +299,12 @@ void ADNonlinearFormIntegrator<mode>::AssembleFaceVector(
 
 /// @brief Assemble the local action of the gradient of the
 /// NonlinearFormIntegrator resulting from a face integral term.
-template<ADEvalInput mode>
-void ADNonlinearFormIntegrator<mode>::AssembleFaceGrad(const FiniteElement &el1,
-      const FiniteElement &el2,
-      FaceElementTransformations &Tr,
-      const Vector &elfun, DenseMatrix &elmat)
+template <bool is_param_cf, ADEval mode>
+void ADNonlinearFormIntegrator<is_param_cf, mode>::AssembleFaceGrad(
+   const FiniteElement &el1,
+   const FiniteElement &el2,
+   FaceElementTransformations &Tr,
+   const Vector &elfun, DenseMatrix &elmat)
 {
    MFEM_ABORT("ADNonlinearFormIntegrator::AssembleFaceVector: "
               "This method is not implemented.");

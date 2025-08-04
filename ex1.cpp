@@ -51,8 +51,7 @@ int main(int argc, char *argv[])
    DiffusionEnergy energy(dim);
 
    NonlinearForm nlf(&fes);
-   nlf.AddDomainIntegrator(new ADNonlinearFormIntegrator<ADEvalInput::GRAD>
-                           (energy));
+   nlf.AddDomainIntegrator(new ADNonlinearFormIntegrator<false, ADEval::GRAD>(energy));
    nlf.SetEssentialTrueDofs(ess_tdof_list);
    LinearForm load(&fes);
    load.AddDomainIntegrator(new DomainLFIntegrator(load_cf));

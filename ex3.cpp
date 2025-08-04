@@ -8,31 +8,6 @@
 using namespace std;
 using namespace mfem;
 
-MAKE_AD_FUNCTION(ElasticityEnergy, T, V, M, gradu, lame,
-{
-   const int dim = round(sqrt(gradu.Size()));
-   const real_t lambda = lame(0);
-   const real_t mu = lame(1);
-
-   T divnorm = T();
-   for (int i=0; i<dim; i++)
-   {
-      divnorm += gradu(i*dim + i);
-   }
-   divnorm = divnorm*divnorm;
-
-   T h1_norm = T();
-   for (int i=0; i<dim; i++)
-   {
-      for (int j=0; j<dim; j++)
-      {
-         T symm = 0.5*(gradu(i*dim + j) + gradu(j*dim + i));
-         h1_norm += symm*symm;
-      }
-   }
-
-   return 0.5*lambda*divnorm + mu*h1_norm;
-});
 
 int main(int argc, char *argv[])
 {
@@ -80,12 +55,12 @@ int main(int argc, char *argv[])
    fes.GetEssentialTrueDofs(is_bdr_ess, ess_tdof_list);
 
    Vector lame({1.0, 1.0}); // Lame parameters: lambda, mu
-   ElasticityEnergy energy(dim*dim, 2);
+   LinearElasticityEnergy energy(dim*dim, 2);
 
    NonlinearForm nlf(&fes);
    {
-      constexpr auto mode = ADEvalInput::GRAD | ADEvalInput::VECTOR;
-      auto *intg = new ADNonlinearFormIntegrator<mode>(energy, dim);
+      constexpr auto mode = ADEval::GRAD | ADEval::VECTOR;
+      auto *intg = new ADNonlinearFormIntegrator<false, mode>(energy, dim);
       intg->SetParameter(lame);
       nlf.AddDomainIntegrator(intg);
    }
