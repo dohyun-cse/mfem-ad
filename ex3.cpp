@@ -8,10 +8,30 @@
 using namespace std;
 using namespace mfem;
 
-MAKE_AD_FUNCTION(MinimalSurfaceEnergy, T, V, M, gradu, dummy,
+MAKE_AD_FUNCTION(ElasticityEnergy, T, V, M, gradu, lame,
 {
-   T h1_norm(gradu*gradu);
-   return sqrt(h1_norm + 1.0)*h1_norm * 0.5;
+   const int dim = round(sqrt(gradu.Size()));
+   const real_t lambda = lame(0);
+   const real_t mu = lame(1);
+
+   T divnorm = T();
+   for (int i=0; i<dim; i++)
+   {
+      divnorm += gradu(i*dim + i);
+   }
+   divnorm = divnorm*divnorm;
+
+   T h1_norm = T();
+   for (int i=0; i<dim; i++)
+   {
+      for (int j=0; j<dim; j++)
+      {
+         T symm = 0.5*(gradu(i*dim + j) + gradu(j*dim + i));
+         h1_norm += symm*symm;
+      }
+   }
+
+   return 0.5*lambda*divnorm + mu*h1_norm;
 });
 
 int main(int argc, char *argv[])
@@ -45,38 +65,50 @@ int main(int argc, char *argv[])
    {
       mesh.UniformRefinement();
    }
-   FunctionCoefficient load_cf([](const Vector &x)
+   VectorFunctionCoefficient load_cf(dim, [dim](const Vector &x, Vector &y)
    {
-      real_t theta = std::atan2(x(1)-0.5, x(0)-0.5);
-      return std::sin(5*theta);
+      y.SetSize(dim);
+      y = 1.0;
    });
 
    H1_FECollection fec(order, dim);
-   FiniteElementSpace fes(&mesh, &fec);
+   FiniteElementSpace fes(&mesh, &fec, dim);
    Array<int> is_bdr_ess(mesh.bdr_attributes.Max());
-   is_bdr_ess = 1;
+   is_bdr_ess = 0;
+   is_bdr_ess[3] = 1;
+   Array<int> ess_tdof_list;
+   fes.GetEssentialTrueDofs(is_bdr_ess, ess_tdof_list);
 
-   MinimalSurfaceEnergy energy(dim);
+   Vector lame({1.0, 1.0}); // Lame parameters: lambda, mu
+   ElasticityEnergy energy(dim*dim, 2);
 
    NonlinearForm nlf(&fes);
-   nlf.AddDomainIntegrator(new ADNonlinearFormIntegrator<ADEvalInput::GRAD>
-                           (energy));
+   {
+      constexpr auto mode = ADEvalInput::GRAD | ADEvalInput::VECTOR;
+      auto *intg = new ADNonlinearFormIntegrator<mode>(energy, dim);
+      intg->SetParameter(lame);
+      nlf.AddDomainIntegrator(intg);
+   }
    nlf.SetEssentialBC(is_bdr_ess);
+   LinearForm load(&fes);
+   load.AddDomainIntegrator(new VectorDomainLFIntegrator(load_cf));
+   load.Assemble();
+   load.SetSubVector(ess_tdof_list, 0.0);
 
    GridFunction x(&fes);
    x = 0.0;
-   x.ProjectBdrCoefficient(load_cf, is_bdr_ess);
+   SparseMatrix mymat = static_cast<SparseMatrix&>(nlf.GetGradient(x));
    NewtonSolver solver;
    UMFPackSolver lin_solver;
    solver.SetSolver(lin_solver);
    solver.SetOperator(nlf);
    solver.SetAbsTol(1e-10);
    solver.SetRelTol(1e-10);
-   IterativeSolver::PrintLevel print_level;
-   print_level.iterations = 1;
-   solver.SetPrintLevel(print_level);
-   Vector dummy(0);
-   solver.Mult(dummy, x);
+   IterativeSolver::PrintLevel pt;
+   pt.iterations = true;
+   solver.SetPrintLevel(pt);
+   solver.Mult(load, x);
+
    GLVis glvis("localhost", 19916);
    glvis.Append(x, "x", "Rjc");
    glvis.Update();

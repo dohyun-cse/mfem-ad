@@ -106,11 +106,11 @@ enum class ADEvalInput
 
    // Parameters
    PARAM  = 1 << 0, // parameter is space-dependent
-   NORMAL = 1 << 2, // requires normal as parameter (param will be [param, normal])
+   NORMAL = 1 << 1, // requires normal as parameter (param will be [param, normal])
 
-   VECTOR = 1 << 3, // vector-valued function
-   VALUE  = 1 << 4, // u(T, ip) is needed
-   GRAD   = 1 << 5, // grad u(T, ip) is needed
+   VECTOR = 1 << 2, // vector-valued function
+   VALUE  = 1 << 3, // u(T, ip) is needed
+   GRAD   = 1 << 4, // grad u(T, ip) is needed
 
    // Hessian = 1 << 5 // In future, we may want to support Hessian evaluation.
 };
@@ -133,15 +133,33 @@ class ADNonlinearFormIntegrator : public NonlinearFormIntegrator
 {
 protected:
    ADFunction &f;
+   
+   // Initialize shapes to [?shape, ?dshape]
+   // and make value_shapes and grad_shapes reference to
+   // allshapes.
+   inline static int InitInputShapes(const FiniteElement &el,
+                               ElementTransformation &Tr,
+                               DenseMatrix &shapes,
+                               Vector &value_shapes,
+                               DenseMatrix &grad_shapes);
+
+   // Calculate parameter, shape, dshape at the given integration point
+   inline static void CalcInputShapes(const FiniteElement &el,
+                               ElementTransformation &Tr,
+                               const IntegrationPoint &ip,
+                               VectorCoefficient *parameter_cf,
+                               Vector &parameter,
+                               Vector &value_shapes,
+                               DenseMatrix &grad_shapes);
+
 private:
    int vdim;
    Vector x, j;
    DenseMatrix H, Hx;
 
    // only if ADEvalInput::VECTOR. Each column corresponds to a vector component
-   DenseMatrix xmat, jmat;
-   DenseTensor Hxmat;
-   DenseMatrix elfun_matview, elvectmat;
+   DenseMatrix xmat, jmat, Hs, Hxsub;
+   DenseMatrix elfun_matview, elvectmat, partelmat;
 
    DenseMatrix allshapes; // all shapes, [?shape, ?dshape]
    Vector shape, shape1, shape2;
@@ -156,8 +174,19 @@ public:
    ADNonlinearFormIntegrator(ADFunction &f): f(f), vdim(1) {}
    ADNonlinearFormIntegrator(ADFunction &f, int vdim): f(f), vdim(vdim)
    {
-      MFEM_VERIFY((ADEvalInput::VECTOR & mode) == mode,
+      MFEM_VERIFY(hasFlag(mode, ADEvalInput::VECTOR),
                   "ADNonlinearFormIntegrator: vdim is only valid for vector-valued functions");
+   }
+
+   void SetParameter(const Vector &param)
+   {
+      this->param = param;
+   }
+   void SetParameter(VectorCoefficient &param_cf)
+   {
+      MFEM_VERIFY(hasFlag(mode, ADEvalInput::PARAM),
+                  "ADNonlinearFormIntegrator: mode must have ADEvalInput::PARAM flag set");
+      this->param_cf = &param_cf;
    }
 
    const IntegrationRule* GetDefaultIntegrationRule(

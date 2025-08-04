@@ -40,7 +40,7 @@ int main(int argc, char *argv[])
    }
    FunctionCoefficient load_cf([](const Vector &x)
    {
-      return M_PI * M_PI * std::sin(M_PI * x(0)) * std::sin(M_PI * x(1));
+      return 2*M_PI * M_PI * std::sin(M_PI * x(0)) * std::sin(M_PI * x(1));
    });
 
    H1_FECollection fec(order, dim);
@@ -51,7 +51,8 @@ int main(int argc, char *argv[])
    DiffusionEnergy energy(dim);
 
    NonlinearForm nlf(&fes);
-   nlf.AddDomainIntegrator(new ADNonlinearFormIntegrator<ADEvalInput::GRAD>(energy));
+   nlf.AddDomainIntegrator(new ADNonlinearFormIntegrator<ADEvalInput::GRAD>
+                           (energy));
    nlf.SetEssentialTrueDofs(ess_tdof_list);
    LinearForm load(&fes);
    load.AddDomainIntegrator(new DomainLFIntegrator(load_cf));
@@ -66,10 +67,18 @@ int main(int argc, char *argv[])
    solver.SetOperator(nlf);
    solver.SetAbsTol(1e-10);
    solver.SetRelTol(1e-10);
-   solver.SetPrintLevel(3);
+   IterativeSolver::PrintLevel print_level;
+   print_level.iterations = true;
+   solver.SetPrintLevel(print_level);
    solver.Mult(load, x);
    GLVis glvis("localhost", 19916);
    glvis.Append(x, "x", "Rjc");
    glvis.Update();
+   FunctionCoefficient exact_sol([](const Vector &x)
+   {
+      return std::sin(M_PI * x(0)) * std::sin(M_PI * x(1));
+   });
+   real_t err = x.ComputeL2Error(exact_sol);
+   out << "Error: " << err << std::endl;
    return 0;
 }
