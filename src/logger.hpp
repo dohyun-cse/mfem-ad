@@ -1,5 +1,5 @@
-#ifndef MFEM_LOGGER
-#define MFEM_LOGGER
+#pragma once
+
 #include <iomanip>
 #include <iostream>
 #include <vector>
@@ -97,4 +97,3 @@ public:
 };
 
 } // namespace mfem
-#endif // MFEM_LOGGER

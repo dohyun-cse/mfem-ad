@@ -1,13 +1,9 @@
 #pragma once
 
-#include "ad-native-def.hpp"
+#include "_ad-native.hpp"
 
 namespace mfem
 {
-inline void PrintSize(const DenseMatrix &H)
-{
-   out << H.Height() << " x " << H.Width();
-}
 inline void ADFunction::Gradient(const Vector &x, const Vector &param,
                                  Vector &J) const
 {
