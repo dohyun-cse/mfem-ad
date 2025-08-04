@@ -7,12 +7,16 @@
 namespace mfem
 {
 
+// Use mfem-native autodiff types
+// If other autodiff libraries are used,
+// define ADReal_t, ADVector, ADMatrix, ... types accordingly.
+
 // First order dual
 typedef future::dual<real_t, real_t> ADReal_t;
 typedef TAutoDiffVector<ADReal_t> ADVector;
 typedef TAutoDiffDenseMatrix<ADReal_t> ADMatrix;
 
-// second order dual
+// second order dual (nested dual)
 typedef future::dual<ADReal_t, ADReal_t> AD2Real_t;
 typedef TAutoDiffVector<AD2Real_t> AD2Vector;
 typedef TAutoDiffDenseMatrix<AD2Real_t> AD2Matrix;
@@ -23,6 +27,12 @@ inline void MultAv(const DenseMatrix &A, const Vector &v, Vector &Av)
    A.Mult(v, Av);
 }
 
+// Interface for AutoDiff functions
+// Use MAKE_AD_FUNCTION macro to create a derived structure.
+// The gradient is evaluated with forward mode autodiff,
+// and the Hessian is evaluated with forward over forward autodiff.
+// The Hessian is assumed to be symmetric, to save computational cost.
+// See, ADFunction::Hessian() for details.
 struct ADFunction
 {
    int n_input;
@@ -42,19 +52,21 @@ struct ADFunction
    { MFEM_ABORT("Not implemented. Use MAKE_AD_FUNCTOR macro to create derived structure"); }
 
    // Evaluate the gradient, using forward mode autodiff
-   void Gradient(const Vector &x, const Vector &param, Vector &J) const;
+   virtual void Gradient(const Vector &x, const Vector &param, Vector &J) const;
    // Evaluate the Hessian, using forward over forward autodiff
-   void Hessian(const Vector &x, const Vector &param, DenseMatrix &H) const;
+   // The Hessian assumed to be symmetric.
+   virtual void Hessian(const Vector &x, const Vector &param, DenseMatrix &H) const;
 };
 
-// Make Autodiff Functor
+// Make Autodiff Function
+// See, DiffusionEnergy, ..., for example of usage.
 // @param name will be the name of the structure
-// @param T is the templated scalar type
-// @param VEC is the templated vector type
-// @param MAT is the templated matrix type
+// @param SCALAR is the name of templated scalar type
+// @param VEC is the name of templated vector type
+// @param MAT is the name of templated matrix type
 // @param param is additional parameter name (will not be differentiated)
 // @param body is the main function body. Use T() to create 0 T-typed value.
-#define MAKE_AD_FUNCTION(name, T, VEC, MAT, var, param, body)                 \
+#define MAKE_AD_FUNCTION(name, SCALAR, VEC, MAT, var, param, body)            \
 struct name : public ADFunction                                               \
 {                                                                             \
    name(int n, int n_param=0)                                                 \
@@ -66,7 +78,7 @@ struct name : public ADFunction                                               \
                  "ADFunction::operator(): var.Size() must match n_input")     \
       MFEM_ASSERT(param.Size() == n_param,                                    \
                  "ADFunction::operator(): var.Size() must match n_input")     \
-      using T = real_t;                                                       \
+      using SCALAR = real_t;                                                 \
       using VEC = Vector;                                                     \
       using MAT = DenseMatrix;                                                \
       body                                                                    \
@@ -78,7 +90,7 @@ struct name : public ADFunction                                               \
                  "ADFunction::operator(): var.Size() must match n_input")     \
       MFEM_ASSERT(param.Size() == n_param,                                    \
                  "ADFunction::operator(): var.Size() must match n_input")     \
-      using T = ADReal_t;                                                     \
+      using SCALAR = ADReal_t;                                                \
       using VEC = ADVector;                                                   \
       using MAT = ADMatrix;                                                   \
       body                                                                    \
@@ -90,7 +102,7 @@ struct name : public ADFunction                                               \
                  "ADFunction::operator(): var.Size() must match n_input")     \
       MFEM_ASSERT(param.Size() == n_param,                                    \
                  "ADFunction::operator(): var.Size() must match n_input")     \
-      using T = AD2Real_t;                                                    \
+      using SCALAR = AD2Real_t;                                               \
       using VEC = AD2Vector;                                                  \
       using MAT = AD2Matrix;                                                  \
       body                                                                    \
@@ -135,11 +147,11 @@ protected:
 
 private:
    int vdim;
-   Vector x, j;
+   Vector x, jac;
    DenseMatrix H, Hx;
 
    // only if ADEvalInput::VECTOR. Each column corresponds to a vector component
-   DenseMatrix xmat, jmat, Hs, Hxsub;
+   DenseMatrix xmat, jacMat, Hs, Hxsub;
    DenseMatrix elfun_matview, elvectmat, partelmat;
 
    DenseMatrix allshapes; // all shapes, [?shape, ?dshape]
@@ -381,6 +393,7 @@ public:
 
 protected:
    constexpr static int numSpaces = sizeof...(modes);
+   static constexpr std::array<ADEval, sizeof...(modes)> modes_arr = {modes...};
    ADFunction &f;
    const IntegrationRule* GetIntegrationRule(
       const FiniteElement& trial_fe, const FiniteElement& test_fe,
@@ -398,17 +411,19 @@ protected:
 
 private:
    Array<int> vdim;
-   Vector x, j;
-   DenseMatrix H, Hx;
+   Vector x, jac;
+   std::vector<Vector> xvar, jacVar;
+   DenseMatrix H;
+   std::vector<Vector> Hvar, Hxvar;
 
    // only if ADEvalInput::VECTOR. Each column corresponds to a vector component
-   DenseMatrix xmat, jmat, Hs, Hxsub;
-   DenseMatrix elfun_matview, elvectmat, partelmat;
+   std::vector<DenseMatrix> xmat, jacVarMat, Hs, Hxsub;
+   std::vector<DenseMatrix> elfun_matview, elvectmat, partelmat;
 
-   DenseMatrix allshapes; // all shapes, [?shape, ?dshape]
-   Vector shape, shape1, shape2;
-   DenseMatrix vshape, vshape1, vshape2;
-   DenseMatrix dshape, gshape1, gshape2;
+   std::vector<DenseMatrix> allshapes; // all shapes, [?shape, ?dshape]
+   std::vector<Vector> shape, shape1, shape2;
+   std::vector<DenseMatrix> vshape, vshape1, vshape2;
+   std::vector<DenseMatrix> dshape, gshape1, gshape2;
    Vector nor;
    Vector param;
    std::shared_ptr<VectorCoefficient> param_cf;
@@ -417,14 +432,27 @@ private:
 public:
    ADBlockNonlinearFormIntegrator(ADFunction &f, IntegrationRule *ir = nullptr)
       : IntRule(ir), f(f), vdim(numSpaces)
-   {
-      vdim = 1;
-   }
+      , allshapes(numSpaces)
+      , xvar(numSpaces), jacVar(numSpaces)
+      , Hvar(numSpaces), Hxvar(numSpaces)
+      , xmat(numSpaces), jacVarMat(numSpaces)
+      , Hs(numSpaces), Hxsub(numSpaces)
+      , elfun_matview(numSpaces), elvectmat(numSpaces)
+      , partelmat(numSpaces)
+      , shape(numSpaces), shape1(numSpaces), shape2(numSpaces)
+      , vshape(numSpaces), vshape1(numSpaces), vshape2(numSpaces)
+      , dshape(numSpaces), gshape1(numSpaces), gshape2(numSpaces)
+   { vdim = 1; }
+
+   ADBlockNonlinearFormIntegrator(ADFunction &f, std::initializer_list<int> vdim,
+                                  IntegrationRule *ir = nullptr)
+      : ADBlockNonlinearFormIntegrator(f, ir), vdim(vdim)
+   {}
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
                                   IntegrationRule *ir = nullptr)
-      : IntRule(ir), f(f), vdim(vdim)
-   {}
+      : ADBlockNonlinearFormIntegrator(f, ir)
+   { this->vdim = vdim; }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, const Vector &param,
                                   IntegrationRule *ir = nullptr)
@@ -485,7 +513,8 @@ public:
                   "ADBlockNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
    }
 
-   ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim, Coefficient &param_cf,
+   ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
+                                  Coefficient &param_cf,
                                   IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, vdim, ir)
    {
@@ -615,6 +644,22 @@ protected:
       }
       return &IntRules.Get(trans.GetGeometryType(), order*2 + 2);
    }
+
+   static Array<int> InitInputShapes(
+      const Array<const FiniteElement *>& el,
+      ElementTransformation &Tr,
+      std::vector<DenseMatrix> &shapes,
+      std::vector<Vector> &value_shapes,
+      std::vector<DenseMatrix> &grad_shapes);
+
+   static void CalcInputShapes(
+      const Array<const FiniteElement *>& el,
+      ElementTransformation &Tr,
+      const IntegrationPoint &ip,
+      std::shared_ptr<VectorCoefficient> &parameter_cf,
+      Vector &parameter,
+      std::vector<Vector> &value_shapes,
+      std::vector<DenseMatrix> &grad_shapes);
 
 private:
 };
