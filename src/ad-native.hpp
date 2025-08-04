@@ -4,6 +4,18 @@
 
 namespace mfem
 {
+template<std::size_t N>
+struct __loop_index
+{
+   static const constexpr size_t value = N;
+   constexpr operator std::size_t() const { return N; }
+};
+template <class F, std::size_t... Is>
+void _constexpr_for(F func, std::index_sequence<Is...>)
+{
+   (func(__loop_index<Is> {}), ...);
+}
+
 inline void ADFunction::Gradient(const Vector &x, const Vector &param,
                                  Vector &J) const
 {
@@ -306,21 +318,21 @@ void ADNonlinearFormIntegrator<is_param_cf, mode>::AssembleFaceGrad(
 }
 
 template <bool is_param_cf, ADEval... modes>
-inline Array<int>
-ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::InitInputShapes(
-   const Array<const FiniteElement *>& el,
-   ElementTransformation &Tr,
-   std::vector<DenseMatrix> &shapes,
-   std::vector<Vector> &value_shapes,
-   std::vector<DenseMatrix> &grad_shapes)
+inline std::array<int, sizeof...(modes)>
+                              ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::InitInputShapes(
+                                 const Array<const FiniteElement *>& el,
+                                 ElementTransformation &Tr,
+                                 std::vector<DenseMatrix> &shapes,
+                                 std::vector<Vector> &value_shapes,
+                                 std::vector<DenseMatrix> &grad_shapes)
 {
    MFEM_ASSERT(el.Size() == numSpaces,
                "ADBlockNonlinearFormIntegrator: "
                "el.Size() must match numSpaces");
    const int sdim = Tr.GetSpaceDim();
-   Array<int> shapedims(numSpaces);
+   std::array<int, sizeof...(modes)> shapedims{};
 
-   for (int i=0; i<numSpaces; i++)
+   _constexpr_for([&](auto i)
    {
       shapedims[i] = (hasFlag(modes_arr[i], ADEval::VALUE) ? 1 : 0)
                      + (hasFlag(modes_arr[i], ADEval::GRAD) ? sdim : 0);
@@ -337,7 +349,7 @@ ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::InitInputShapes(
                                         + dof*(hasFlag(modes_arr[i], ADEval::VALUE)),
                                         dof, sdim);
       }
-   }
+   }, std::make_index_sequence<sizeof...(modes)> {});
    return shapedims;
 }
 template <bool is_param_cf, ADEval... modes>
@@ -358,8 +370,7 @@ ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::CalcInputShapes(
                   "Parameter coefficient should be set before AssembleElement...");
       parameter_cf->Eval(parameter, Tr, ip);
    }
-
-   for (int i=0; i<numSpaces; i++)
+   _constexpr_for([&](auto i)
    {
       // Get value shape
       if constexpr (hasFlag(modes_arr[i], ADEval::VALUE))
@@ -368,7 +379,7 @@ ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::CalcInputShapes(
       // Get gradient shape
       if constexpr (hasFlag(modes_arr[i], ADEval::GRAD))
       { el[i]->CalcPhysDShape(Tr, grad_shapes[i]); }
-   }
+   }, std::make_index_sequence<sizeof...(modes)> {});
 }
 
 /// Compute the local energy
@@ -381,8 +392,8 @@ real_t ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::GetElementEnergy(
    MFEM_ASSERT(el.Size() == numSpaces,
                "ADBlockNonlinearFormIntegrator: "
                "el.Size() must match numSpaces");
-   Array<int> dof(numSpaces);
-   Array<int> order(numSpaces);
+   std::array<int, numSpaces> dof{};
+   std::array<int, numSpaces> order{};
    for (int i=0; i<numSpaces; i++)
    {
       dof[i] = el[i]->GetDof();
@@ -394,10 +405,11 @@ real_t ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::GetElementEnergy(
 
    real_t energy = 0.0;
 
-   Array<int> shapedim(InitInputShapes(el, Tr, allshapes, shape, dshape));
+   std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes, shape,
+                                       dshape));
    x.SetSize(f.n_input);
    int x_idx = 0;
-   for (int vi=0; vi<numSpaces; vi++)
+   _constexpr_for([&](auto vi)
    {
       xvar[vi].MakeRef(x, x_idx, shapedim[vi]*vdim[vi]);
       x_idx += shapedim[vi]*vdim[vi];
@@ -407,7 +419,7 @@ real_t ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::GetElementEnergy(
                                            dof[vi], vdim[vi]);
          xmat[vi].UseExternalData(xvar[vi].GetData(), shapedim[vi], vdim[vi]);
       }
-   }
+   }, std::make_index_sequence<sizeof...(modes)> {});
 
    const IntegrationRule * ir = GetIntegrationRule(el, Tr);
    for (int i = 0; i < ir->GetNPoints(); i++)
@@ -417,7 +429,7 @@ real_t ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::GetElementEnergy(
 
       CalcInputShapes(el, Tr, ip, param_cf, param, shape, dshape);
 
-      for (int vi=0; vi<numSpaces; vi++)
+      _constexpr_for([&](auto vi)
       {
          if constexpr (hasFlag(modes_arr[vi], ADEval::VECTOR))
          {
@@ -427,7 +439,7 @@ real_t ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::GetElementEnergy(
          {
             allshapes[vi].MultTranspose(*elfun[vi], xvar[vi]);
          }
-      }
+      }, std::make_index_sequence<sizeof...(modes)> {});
       energy += f(x, param)*Tr.Weight()*ip.weight;
    }
    return energy;
@@ -444,8 +456,8 @@ void ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::AssembleElementVecto
    MFEM_ASSERT(el.Size() == numSpaces,
                "ADBlockNonlinearFormIntegrator: "
                "el.Size() must match numSpaces");
-   Array<int> dof(numSpaces);
-   Array<int> order(numSpaces);
+   std::array<int, numSpaces> dof{};
+   std::array<int, numSpaces> order{};
    for (int i=0; i<numSpaces; i++)
    {
       dof[i] = el[i]->GetDof();
@@ -460,25 +472,21 @@ void ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::AssembleElementVecto
       *elvect[i] = 0.0;
    }
 
-   Array<int> shapedim(InitInputShapes(el, Tr, allshapes, shape, dshape));
-   MFEM_DEBUG_DO(
-      int n_input = 0;
-      for (int i=0; i<numSpaces; i++)
-{
-   n_input += shapedim[i]*vdim[i];
+   std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes, shape,
+                                       dshape));
+   Array<int> x_idx(numSpaces+1);
+   x_idx[0] = 0;
+   for (int i=0; i<numSpaces; i++)
+   {
+      x_idx[i+1] = shapedim[i]*vdim[i];
    }
-   MFEM_ASSERT(n_input == f.n_input,
-               "ADBlockNonlinearFormIntegrator: "
-               "shapedim*vdim must match n_input");
-   );
+   x_idx.PartialSum();
    x.SetSize(f.n_input);
    jac.SetSize(f.n_input);
-   int x_idx = 0;
-   for (int vi=0; vi<numSpaces; vi++)
+   _constexpr_for([&](auto vi)
    {
-      xvar[vi].MakeRef(x, x_idx, shapedim[vi]*vdim[vi]);
-      jacVar[vi].MakeRef(jac, x_idx, shapedim[vi]*vdim[vi]);
-      x_idx += shapedim[vi]*vdim[vi];
+      xvar[vi].MakeRef(x, x_idx[vi], shapedim[vi]*vdim[vi]);
+      jacVar[vi].MakeRef(jac, x_idx[vi], shapedim[vi]*vdim[vi]);
       if constexpr (hasFlag(modes_arr[vi], ADEval::VECTOR))
       {
          elfun_matview[vi].UseExternalData(const_cast<real_t*>(elfun[vi]->GetData()),
@@ -486,7 +494,7 @@ void ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::AssembleElementVecto
          xmat[vi].UseExternalData(xvar[vi].GetData(), shapedim[vi], vdim[vi]);
          jacVarMat[vi].UseExternalData(jacVar[vi].GetData(), shapedim[vi], vdim[vi]);
       }
-   }
+   }, std::make_index_sequence<sizeof...(modes)> {});
 
    const IntegrationRule * ir = GetIntegrationRule(el, Tr);
    real_t w;
@@ -498,7 +506,7 @@ void ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::AssembleElementVecto
 
       CalcInputShapes(el, Tr, ip, param_cf, param, shape, dshape);
 
-      for (int vi=0; vi<numSpaces; vi++)
+      _constexpr_for([&](auto vi)
       {
          if constexpr (hasFlag(modes_arr[vi], ADEval::VECTOR))
          {
@@ -508,13 +516,13 @@ void ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::AssembleElementVecto
          {
             allshapes[vi].MultTranspose(*elfun[vi], xvar[vi]);
          }
-      }
+      }, std::make_index_sequence<sizeof...(modes)> {});
       f.Gradient(x, param, jac);
       jac *= w;
 
-      for (int vi=0; vi<numSpaces; vi++)
+      _constexpr_for([&](auto vi)
       {
-         if constexpr (hasFlag(modes_arr[i], ADEval::VECTOR))
+         if constexpr (hasFlag(modes_arr[vi], ADEval::VECTOR))
          {
             AddMult(allshapes[vi], jacVarMat[vi], elvectmat[vi]);
          }
@@ -522,11 +530,11 @@ void ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::AssembleElementVecto
          {
             allshapes[vi].AddMult(jacVar[vi], *elvect[vi]);
          }
-      }
+      }, std::make_index_sequence<sizeof...(modes)> {});
    }
 }
 
-/// Assemble the local gradient matrix
+/// Perform the local action of the NonlinearFormIntegrator
 template <bool is_param_cf, ADEval... modes>
 void ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::AssembleElementGrad(
    const Array<const FiniteElement *>&el,
@@ -536,77 +544,92 @@ void ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::AssembleElementGrad(
 {
    MFEM_ABORT("ADBlockNonlinearFormIntegrator::AssembleElementGrad: "
               "Not yet implemented");
-   MFEM_ASSERT(el.Size() == numSpaces,
-               "ADBlockNonlinearFormIntegrator: "
-               "el.Size() must match numSpaces");
-   Array<int> dof(numSpaces);
-   Array<int> order(numSpaces);
-   for (int i=0; i<numSpaces; i++)
-   {
-      dof[i] = el[i]->GetDof();
-      order[i] = el[i]->GetOrder();
-   }
-
-   const int sdim = Tr.GetSpaceDim();
-   const int dim = el[0]->GetDim();
-   for (int j=0; j<numSpaces; j++)
-   {
-      for (int i=0; i<numSpaces; i++)
-      {
-         elmat(i,j)->SetSize(dof[i]*vdim[i], dof[j]*vdim[j]);
-         *elmat(i,j) = 0.0;
-      }
-   }
-
-   Array<int> shapedim(InitInputShapes(el, Tr, allshapes, shape, dshape));
-   x.SetSize(f.n_input);
-   jac.SetSize(f.n_input);
-   int x_idx = 0;
-   for (int vi=0; vi<numSpaces; vi++)
-   {
-      xvar[vi].MakeRef(x, x_idx, shapedim[vi]*vdim[vi]);
-      jacVar[vi].MakeRef(jac, x_idx, shapedim[vi]*vdim[vi]);
-      x_idx += shapedim[vi]*vdim[vi];
-      if constexpr (hasFlag(modes_arr[vi], ADEval::VECTOR))
-      {
-         elfun_matview[vi].UseExternalData(const_cast<real_t*>(elfun[vi]->GetData()),
-                                           dof[vi], vdim[vi]);
-         xmat[vi].UseExternalData(xvar[vi].GetData(), shapedim[vi], vdim[vi]);
-         jacVarMat[vi].UseExternalData(jacVar[vi].GetData(), shapedim[vi], vdim[vi]);
-      }
-   }
-
-   const IntegrationRule * ir = GetIntegrationRule(el, Tr);
-   real_t w;
-   for (int i = 0; i < ir->GetNPoints(); i++)
-   {
-      const IntegrationPoint &ip = ir->IntPoint(i);
-      Tr.SetIntPoint(&ip);
-      w = Tr.Weight()*ip.weight;
-
-      CalcInputShapes(el, Tr, ip, param_cf, param, shape, dshape);
-
-      for (int vi=0; vi<numSpaces; vi++)
-      {
-         if constexpr (hasFlag(modes_arr[vi], ADEval::VECTOR))
-         {
-            MultAtB(allshapes[vi], elfun_matview[vi], xmat[vi]);
-         }
-         else
-         {
-            allshapes[vi].MultTranspose(*elfun[vi], xvar[vi]);
-         }
-      }
-      f.Hessian(x, param, H);
-      H *= w;
-
-      for (int vi=0; vi<numSpaces; vi++)
-      {
-         for (int vj=0; vj<numSpaces; vj++)
-         {
-         }
-      }
-   }
+   // MFEM_ASSERT(el.Size() == numSpaces,
+   //             "ADBlockNonlinearFormIntegrator: "
+   //             "el.Size() must match numSpaces");
+   // Array<int> dof(numSpaces);
+   // Array<int> order(numSpaces);
+   // for (int i=0; i<numSpaces; i++)
+   // {
+   //    dof[i] = el[i]->GetDof();
+   //    order[i] = el[i]->GetOrder();
+   // }
+   //
+   // const int sdim = Tr.GetSpaceDim();
+   // const int dim = el[0]->GetDim();
+   // for (int j=0; j<numSpaces; j++)
+   // {
+   //    for (int i=0; i<numSpaces; i++)
+   //    {
+   //       elmat(i,j)->SetSize(dof[i]*vdim[i], dof[j]*vdim[j]);
+   //       *elmat(i,j) = 0.0;
+   //    }
+   // }
+   //
+   // std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes, shape,
+   //                                     dshape));
+   // Array<int> x_idx(numSpaces+1);
+   // x_idx[0] = 0;
+   // for (int i=0; i<numSpaces; i++)
+   // {
+   //    x_idx[i+1] = shapedim[i]*vdim[i];
+   // }
+   // x_idx.PartialSum();
+   // x.SetSize(f.n_input);
+   // H.SetSize(f.n_input);
+   //
+   // _constexpr_for([&](auto vi)
+   //                {
+   // Hx.SetSize(dof, shapedim*vdim*vdim);
+   // if constexpr (hasFlag(mode, ADEval::VECTOR))
+   // {
+   //    elfun_matview.UseExternalData(const_cast<real_t*>(elfun.GetData()),
+   //                                  dof, vdim);
+   //    xmat.UseExternalData(x.GetData(), shapedim, vdim);
+   //    partelmat.SetSize(dof, dof);
+   //    Hs.UseExternalData(H.GetData(), shapedim, vdim*shapedim*vdim);
+   // }
+   //                }, std::make_index_sequence<sizeof...(modes)> {});
+   //
+   // const IntegrationRule * ir = GetIntegrationRule(el, Tr);
+   // for (int i = 0; i < ir->GetNPoints(); i++)
+   // {
+   //    const IntegrationPoint &ip = ir->IntPoint(i);
+   //    Tr.SetIntPoint(&ip);
+   //    w = ip.weight * Tr.Weight();
+   //    CalcInputShapes(el, Tr, ip, param_cf, param, shape, dshape);
+   //
+   //    // Convert dof to x = [[value, grad], [value, grad], ...]
+   //    if constexpr (hasFlag(mode, ADEval::VECTOR)) { MultAtB(allshapes, elfun_matview, xmat); }
+   //    else { allshapes.MultTranspose(elfun, x); }
+   //
+   //    f.Hessian(x, param, H);
+   //    H *= w;
+   //
+   //    if constexpr (hasFlag(mode, ADEval::VECTOR))
+   //    {
+   //       Mult(allshapes, Hs, Hx);
+   //       const int nel = shapedim*dof;
+   //       for (int c=0; c<vdim; c++)
+   //       {
+   //          for (int r=0; r<=c; r++)
+   //          {
+   //             Hxsub.UseExternalData(Hx.GetData() + (c*vdim + r)*nel, dof, shapedim);
+   //             MultABt(allshapes, Hxsub, partelmat);
+   //             elmat.AddSubMatrix(c*dof, r*dof, partelmat);
+   //             if (c != r)
+   //             {
+   //                elmat.AddSubMatrix(r*dof, c*dof, partelmat);
+   //             }
+   //          }
+   //       }
+   //    }
+   //    else
+   //    {
+   //       Mult(allshapes, H, Hx);
+   //       AddMultABt(allshapes, Hx, elmat);
+   //    }
+   // }
 }
 
 /// @brief Perform the local action of the NonlinearFormIntegrator resulting

@@ -55,7 +55,8 @@ struct ADFunction
    virtual void Gradient(const Vector &x, const Vector &param, Vector &J) const;
    // Evaluate the Hessian, using forward over forward autodiff
    // The Hessian assumed to be symmetric.
-   virtual void Hessian(const Vector &x, const Vector &param, DenseMatrix &H) const;
+   virtual void Hessian(const Vector &x, const Vector &param,
+                        DenseMatrix &H) const;
 };
 
 // Make Autodiff Function
@@ -172,23 +173,23 @@ public:
    ADNonlinearFormIntegrator(ADFunction &f, const Vector &param,
                              IntegrationRule *ir = nullptr)
       : ADNonlinearFormIntegrator(f, ir)
-      , param(param)
    {
       MFEM_VERIFY(!is_param_cf,
                   "ADNonlinearFormIntegrator: Expected parameter coefficients");
       MFEM_VERIFY(param.Size() == f.n_param,
                   "ADNonlinearFormIntegrator: param.Size() must match n_param");
+      this->param = param;
    }
 
    ADNonlinearFormIntegrator(ADFunction &f, VectorCoefficient &param_cf,
                              IntegrationRule *ir = nullptr)
       : ADNonlinearFormIntegrator(f, ir)
-      , param_cf(std::make_shared<VectorCoefficient>(&param_cf))
    {
       MFEM_VERIFY(is_param_cf,
                   "ADNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
                   "ADNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
+      this->param_cf = std::make_shared<VectorCoefficient>(&param_cf);
    }
 
    ADNonlinearFormIntegrator(ADFunction &f, Coefficient &param_cf,
@@ -207,23 +208,23 @@ public:
    ADNonlinearFormIntegrator(ADFunction &f, int vdim, const Vector &param,
                              IntegrationRule *ir = nullptr)
       : ADNonlinearFormIntegrator(f, vdim, ir)
-      , param(param)
    {
       MFEM_VERIFY(!is_param_cf,
                   "ADNonlinearFormIntegrator: Expected parameter coefficients");
       MFEM_VERIFY(param.Size() == f.n_param,
                   "ADNonlinearFormIntegrator: param.Size() must match n_param");
+      this->param = param;
    }
 
    ADNonlinearFormIntegrator(ADFunction &f, int vdim, VectorCoefficient &param_cf,
                              IntegrationRule *ir = nullptr)
       : ADNonlinearFormIntegrator(f, vdim, ir)
-      , param_cf(std::make_shared<VectorCoefficient>(&param_cf))
    {
       MFEM_VERIFY(is_param_cf,
                   "ADNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
                   "ADNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
+      this->param_cf = std::make_shared<VectorCoefficient>(&param_cf);
    }
 
    ADNonlinearFormIntegrator(ADFunction &f, int vdim, Coefficient &param_cf,
@@ -392,7 +393,7 @@ public:
    const IntegrationRule *IntRule = nullptr;
 
 protected:
-   constexpr static int numSpaces = sizeof...(modes);
+   constexpr static size_t numSpaces = sizeof...(modes);
    static constexpr std::array<ADEval, sizeof...(modes)> modes_arr = {modes...};
    ADFunction &f;
    const IntegrationRule* GetIntegrationRule(
@@ -414,7 +415,7 @@ private:
    Vector x, jac;
    std::vector<Vector> xvar, jacVar;
    DenseMatrix H;
-   std::vector<Vector> Hvar, Hxvar;
+   std::vector<DenseMatrix> Hx;
 
    // only if ADEvalInput::VECTOR. Each column corresponds to a vector component
    std::vector<DenseMatrix> xmat, jacVarMat, Hs, Hxsub;
@@ -434,7 +435,7 @@ public:
       : IntRule(ir), f(f), vdim(numSpaces)
       , allshapes(numSpaces)
       , xvar(numSpaces), jacVar(numSpaces)
-      , Hvar(numSpaces), Hxvar(numSpaces)
+      , Hx(numSpaces)
       , xmat(numSpaces), jacVarMat(numSpaces)
       , Hs(numSpaces), Hxsub(numSpaces)
       , elfun_matview(numSpaces), elvectmat(numSpaces)
@@ -457,23 +458,23 @@ public:
    ADBlockNonlinearFormIntegrator(ADFunction &f, const Vector &param,
                                   IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, ir)
-      , param(param)
    {
       MFEM_VERIFY(!is_param_cf,
                   "ADBlockNonlinearFormIntegrator: Expected parameter coefficients");
       MFEM_VERIFY(param.Size() == f.n_param,
                   "ADBlockNonlinearFormIntegrator: param.Size() must match n_param");
+      this->param = param;
    }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, VectorCoefficient &param_cf,
                                   IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, ir)
-      , param_cf(std::make_shared<VectorCoefficient>(&param_cf))
    {
       MFEM_VERIFY(is_param_cf,
                   "ADBlockNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
                   "ADBlockNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
+      this->param_cf = std::make_shared<VectorCoefficient>(&param_cf);
    }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, Coefficient &param_cf,
@@ -493,24 +494,24 @@ public:
                                   const Vector &param,
                                   IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, vdim, ir)
-      , param(param)
    {
       MFEM_VERIFY(!is_param_cf,
                   "ADBlockNonlinearFormIntegrator: Expected parameter coefficients");
       MFEM_VERIFY(param.Size() == f.n_param,
                   "ADBlockNonlinearFormIntegrator: param.Size() must match n_param");
+      this->param = param;
    }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
                                   VectorCoefficient &param_cf,
                                   IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, vdim, ir)
-      , param_cf(std::make_shared<VectorCoefficient>(&param_cf))
    {
       MFEM_VERIFY(is_param_cf,
                   "ADBlockNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
                   "ADBlockNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
+      this->param_cf = std::make_shared<VectorCoefficient>(&param_cf);
    }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
@@ -645,12 +646,12 @@ protected:
       return &IntRules.Get(trans.GetGeometryType(), order*2 + 2);
    }
 
-   static Array<int> InitInputShapes(
-      const Array<const FiniteElement *>& el,
-      ElementTransformation &Tr,
-      std::vector<DenseMatrix> &shapes,
-      std::vector<Vector> &value_shapes,
-      std::vector<DenseMatrix> &grad_shapes);
+   static std::array<int, sizeof...(modes)> InitInputShapes(
+                                    const Array<const FiniteElement *>& el,
+                                    ElementTransformation &Tr,
+                                    std::vector<DenseMatrix> &shapes,
+                                    std::vector<Vector> &value_shapes,
+                                    std::vector<DenseMatrix> &grad_shapes);
 
    static void CalcInputShapes(
       const Array<const FiniteElement *>& el,
