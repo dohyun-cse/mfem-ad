@@ -4,16 +4,16 @@
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/ad_intg2.hpp"
+#include "src/ad_intg.hpp"
 #include "src/tools.hpp"
 
 using namespace std;
 using namespace mfem;
 
 
-struct ObstacleEnergy : public ADFunction2
+struct ObstacleEnergy : public ADFunction
 {
-   ObstacleEnergy(int dim) : ADFunction2(dim+1) {}
+   ObstacleEnergy(int dim) : ADFunction(dim+1) {}
    AD_IMPL(T, V, M, x,
    {
       T result = {};

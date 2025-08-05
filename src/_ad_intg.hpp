@@ -45,10 +45,10 @@ inline constexpr bool hasFlag(ADEval mode, ADEval flag)
    return (mode & flag) == flag;
 }
 
-template <bool is_param_cf, ADEval... modes>
+template <ADEval... modes>
 class ADBlockNonlinearFormIntegrator;
 
-template <bool is_param_cf, ADEval mode>
+template <ADEval mode>
 class ADNonlinearFormIntegrator : public NonlinearFormIntegrator
 {
 protected:
@@ -68,11 +68,6 @@ private:
    DenseMatrix vshape, vshape1, vshape2;
    DenseMatrix dshape, gshape1, gshape2;
    Vector nor;
-   Vector param;
-   std::unique_ptr<VectorCoefficient> owned_param_cf;
-   VectorCoefficient *param_cf = nullptr;
-
-   Vector face_param;
    // DenseMatrix d2shape, d2shape1, d2shape2; // for hessian. Not implemented yet.
 public:
    ADNonlinearFormIntegrator(ADFunction &f, IntegrationRule *ir = nullptr)
@@ -80,106 +75,6 @@ public:
    ADNonlinearFormIntegrator(ADFunction &f, int vdim,
                              IntegrationRule *ir = nullptr)
       : NonlinearFormIntegrator(ir), f(f), vdim(vdim) {}
-   ADNonlinearFormIntegrator(ADFunction &f, const Vector &param,
-                             IntegrationRule *ir = nullptr)
-      : ADNonlinearFormIntegrator(f, ir)
-   {
-      MFEM_VERIFY(!is_param_cf,
-                  "ADNonlinearFormIntegrator: Expected parameter coefficients");
-      MFEM_VERIFY(param.Size() == f.n_param,
-                  "ADNonlinearFormIntegrator: param.Size() must match n_param");
-      this->param = param;
-   }
-
-   ADNonlinearFormIntegrator(ADFunction &f, VectorCoefficient &param_cf,
-                             IntegrationRule *ir = nullptr)
-      : ADNonlinearFormIntegrator(f, ir)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADNonlinearFormIntegrator: Expected constant parameter");
-      MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
-                  "ADNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
-      this->param_cf = &param_cf;
-   }
-
-   ADNonlinearFormIntegrator(ADFunction &f, Coefficient &param_cf,
-                             IntegrationRule *ir = nullptr)
-      : ADNonlinearFormIntegrator(f, ir)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADNonlinearFormIntegrator: Expected constant parameter");
-      MFEM_VERIFY(f.n_param == 1,
-                  "ADNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
-      vec_cf->Set(0, &param_cf, false);
-      this->owned_param_cf = std::move(vec_cf);
-      this->param_cf = this->owned_param_cf.get();
-   }
-
-   ADNonlinearFormIntegrator(ADFunction &f, int vdim, const Vector &param,
-                             IntegrationRule *ir = nullptr)
-      : ADNonlinearFormIntegrator(f, vdim, ir)
-   {
-      MFEM_VERIFY(!is_param_cf,
-                  "ADNonlinearFormIntegrator: Expected parameter coefficients");
-      MFEM_VERIFY(param.Size() == f.n_param,
-                  "ADNonlinearFormIntegrator: param.Size() must match n_param");
-      this->param = param;
-   }
-
-   ADNonlinearFormIntegrator(ADFunction &f, int vdim, VectorCoefficient &param_cf,
-                             IntegrationRule *ir = nullptr)
-      : ADNonlinearFormIntegrator(f, vdim, ir)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADNonlinearFormIntegrator: Expected constant parameter");
-      MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
-                  "ADNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
-      this->param_cf = &param_cf;
-   }
-
-   ADNonlinearFormIntegrator(ADFunction &f, int vdim, Coefficient &param_cf,
-                             IntegrationRule *ir = nullptr)
-      : ADNonlinearFormIntegrator(f, vdim, ir)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADNonlinearFormIntegrator: Expected constant parameter");
-      MFEM_VERIFY(f.n_param == 1,
-                  "ADNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
-      vec_cf->Set(0, &param_cf, false);
-      this->owned_param_cf = std::move(vec_cf);
-      this->param_cf = this->owned_param_cf.get();
-   }
-
-   // post-setter for parameter
-   void SetParameter(const Vector &param)
-   {
-      MFEM_VERIFY(!is_param_cf,
-                  "ADNonlinearFormIntegrator: Expected parameter coefficients");
-      this->param = param;
-   }
-
-   // post-setter for parameter coefficient
-   void SetParameter(VectorCoefficient &param_cf)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADNonlinearFormIntegrator: Expected constant parameter");
-      this->param_cf = &param_cf;
-   }
-
-   // post-setter for parameter coefficient with scalar coefficient
-   void SetParameter(Coefficient &param_cf)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADNonlinearFormIntegrator: Expected constant parameter");
-      MFEM_VERIFY(f.n_param == 1,
-                  "ADNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
-      vec_cf->Set(0, &param_cf, false);
-      this->owned_param_cf = std::move(vec_cf);
-      this->param_cf = this->owned_param_cf.get();
-   }
 
    const IntegrationRule* GetDefaultIntegrationRule(
       const FiniteElement& trial_fe, const FiniteElement& test_fe,
@@ -235,16 +130,14 @@ protected:
    inline static void CalcInputShapes(const FiniteElement &el,
                                       ElementTransformation &Tr,
                                       const IntegrationPoint &ip,
-                                      VectorCoefficient *parameter_cf,
-                                      Vector &parameter,
                                       Vector &value_shapes,
                                       DenseMatrix &grad_shapes);
-   template <bool is_param_cf_, ADEval... modes>
+   template <ADEval... modes>
    friend class ADBlockNonlinearFormIntegrator;
 private:
 };
 
-template <bool is_param_cf, ADEval... modes>
+template <ADEval... modes>
 class ADBlockNonlinearFormIntegrator : public BlockNonlinearFormIntegrator
 {
 public:
@@ -286,11 +179,6 @@ private:
    std::vector<DenseMatrix> vshape, vshape1, vshape2;
    std::vector<DenseMatrix> dshape, gshape1, gshape2;
    Vector nor;
-   Vector param;
-   // owned cf
-   std::unique_ptr<VectorCoefficient> owned_param_cf;
-   VectorCoefficient *param_cf = nullptr;
-   Vector face_param;
    // DenseMatrix d2shape, d2shape1, d2shape2; // for hessian. Not implemented yet.
 public:
    ADBlockNonlinearFormIntegrator(ADFunction &f,
@@ -317,110 +205,6 @@ public:
                                   const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, ir)
    { this->vdim = vdim; }
-
-   ADBlockNonlinearFormIntegrator(ADFunction &f, const Vector &param,
-                                  const IntegrationRule *ir = nullptr)
-      : ADBlockNonlinearFormIntegrator(f, ir)
-   {
-      MFEM_VERIFY(!is_param_cf,
-                  "ADBlockNonlinearFormIntegrator: Expected parameter coefficients");
-      MFEM_VERIFY(param.Size() == f.n_param,
-                  "ADBlockNonlinearFormIntegrator: param.Size() must match n_param");
-      this->param = param;
-   }
-
-   ADBlockNonlinearFormIntegrator(ADFunction &f, VectorCoefficient &param_cf,
-                                  const IntegrationRule *ir = nullptr)
-      : ADBlockNonlinearFormIntegrator(f, ir)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADBlockNonlinearFormIntegrator: Expected constant parameter");
-      MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
-                  "ADBlockNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
-      this->param_cf = &param_cf;
-   }
-
-   ADBlockNonlinearFormIntegrator(ADFunction &f, Coefficient &param_cf,
-                                  const IntegrationRule *ir = nullptr)
-      : ADBlockNonlinearFormIntegrator(f, ir)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADBlockNonlinearFormIntegrator: Expected constant parameter");
-      MFEM_VERIFY(f.n_param == 1,
-                  "ADBlockNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
-      vec_cf->Set(0, &param_cf, false);
-      this->owned_param_cf = std::move(vec_cf);
-      this->param_cf = this->owned_param_cf.get();
-   }
-
-   ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
-                                  const Vector &param,
-                                  const IntegrationRule *ir = nullptr)
-      : ADBlockNonlinearFormIntegrator(f, vdim, ir)
-   {
-      MFEM_VERIFY(!is_param_cf,
-                  "ADBlockNonlinearFormIntegrator: Expected parameter coefficients");
-      MFEM_VERIFY(param.Size() == f.n_param,
-                  "ADBlockNonlinearFormIntegrator: param.Size() must match n_param");
-      this->param = param;
-   }
-
-   ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
-                                  VectorCoefficient &param_cf,
-                                  const IntegrationRule *ir = nullptr)
-      : ADBlockNonlinearFormIntegrator(f, vdim, ir)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADBlockNonlinearFormIntegrator: Expected constant parameter");
-      MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
-                  "ADBlockNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
-      this->param_cf = &param_cf;
-   }
-
-   ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
-                                  Coefficient &param_cf,
-                                  const IntegrationRule *ir = nullptr)
-      : ADBlockNonlinearFormIntegrator(f, vdim, ir)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADBlockNonlinearFormIntegrator: Expected constant parameter");
-      MFEM_VERIFY(f.n_param == 1,
-                  "ADBlockNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
-      vec_cf->Set(0, &param_cf, false);
-      this->owned_param_cf = std::move(vec_cf);
-      this->param_cf = this->owned_param_cf.get();
-   }
-
-   // post-setter for parameter
-   void SetParameter(const Vector &param)
-   {
-      MFEM_VERIFY(!is_param_cf,
-                  "ADBlockNonlinearFormIntegrator: Expected parameter coefficients");
-      this->param = param;
-   }
-
-   // post-setter for parameter coefficient
-   void SetParameter(VectorCoefficient &param_cf)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADBlockNonlinearFormIntegrator: Expected constant parameter");
-      this->param_cf = &param_cf;
-   }
-
-   // post-setter for parameter coefficient with scalar coefficient
-   void SetParameter(Coefficient &param_cf)
-   {
-      MFEM_VERIFY(is_param_cf,
-                  "ADBlockNonlinearFormIntegrator: Expected constant parameter");
-      MFEM_VERIFY(f.n_param == 1,
-                  "ADBlockNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
-      vec_cf->Set(0, &param_cf, false);
-      this->owned_param_cf = std::move(vec_cf);
-      this->param_cf = this->owned_param_cf.get();
-   }
 
    virtual void SetIntRule(const IntegrationRule *ir)
    { IntRule = ir; }
@@ -523,8 +307,6 @@ protected:
       const Array<const FiniteElement *>& el,
       ElementTransformation &Tr,
       const IntegrationPoint &ip,
-      VectorCoefficient *parameter_cf,
-      Vector &parameter,
       std::vector<Vector> &value_shapes,
       std::vector<DenseMatrix> &grad_shapes);
 

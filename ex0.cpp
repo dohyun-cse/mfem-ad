@@ -4,15 +4,15 @@
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/ad_native2.hpp"
+#include "src/ad_native.hpp"
 
 using namespace std;
 using namespace mfem;
 
-struct MyADFunction : public ADFunction2
+struct MyADFunction : public ADFunction
 {
 public:
-   MyADFunction(int n_input): ADFunction2(n_input) { }
+   MyADFunction(int n_input): ADFunction(n_input) { }
 
    AD_IMPL(T, V, M, x, return sin(x(0))*exp(x(1)) + pow(x(2), 3.0);)
 };

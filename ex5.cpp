@@ -4,25 +4,25 @@
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/ad_intg2.hpp"
+#include "src/ad_intg.hpp"
 #include "src/tools.hpp"
 
 using namespace std;
 using namespace mfem;
 
-struct VolumeFunctional : public ADFunction2
+struct VolumeFunctional : public ADFunction
 {
-   VolumeFunctional(int n_input) : ADFunction2(n_input) {}
+   VolumeFunctional(int n_input) : ADFunction(n_input) {}
    AD_IMPL(T, V, M, x, return x[0];);
 };
-struct MassFunctional : public ADFunction2
+struct MassFunctional : public ADFunction
 {
-   MassFunctional(int n_input) : ADFunction2(n_input) {}
+   MassFunctional(int n_input) : ADFunction(n_input) {}
    AD_IMPL(T, V, M, x, return x[0]*x[1];);
 };
-struct TotalEnergyFunctional : public ADFunction2
+struct TotalEnergyFunctional : public ADFunction
 {
-   TotalEnergyFunctional(int n_input) : ADFunction2(n_input) {}
+   TotalEnergyFunctional(int n_input) : ADFunction(n_input) {}
    AD_IMPL(T, V, M, x,
    {
       T result = T();
@@ -36,23 +36,23 @@ struct TotalEnergyFunctional : public ADFunction2
       return result;
    });
 };
-struct MomentumFunctional : public ADFunction2
+struct MomentumFunctional : public ADFunction
 {
    int comp;
-   MomentumFunctional(int n_input, int comp) : ADFunction2(n_input), comp(comp) {}
+   MomentumFunctional(int n_input, int comp) : ADFunction(n_input), comp(comp) {}
    AD_IMPL(T, V, M, x, return x[0]*x[1]*x[3+comp];);
 };
 
-std::tuple<std::unique_ptr<ADFunction2>, std::vector<std::unique_ptr<ADFunction2>>>
+std::tuple<std::unique_ptr<ADFunction>, std::vector<std::unique_ptr<ADFunction>>>
 MakeConstraints(const Vector &target, Vector &lambda, real_t &mu, const int dim,
                 std::vector<std::unique_ptr<GridFunction>> &x_min,
                 std::vector<std::unique_ptr<GridFunction>> &x_max,
                 std::vector<std::unique_ptr<GridFunction>> &latent_k)
 {
-   std::vector<std::unique_ptr<ADFunction2>> temps;
+   std::vector<std::unique_ptr<ADFunction>> temps;
 
    const int numVars = 3 + dim;
-   std::vector<std::unique_ptr<ADFunction2>> const_list;
+   std::vector<std::unique_ptr<ADFunction>> const_list;
    const_list.emplace_back(std::make_unique<VolumeFunctional>(numVars));
    const_list.emplace_back(std::make_unique<MassFunctional>(numVars));
    const_list.emplace_back(std::make_unique<TotalEnergyFunctional>(numVars));
@@ -60,48 +60,48 @@ MakeConstraints(const Vector &target, Vector &lambda, real_t &mu, const int dim,
    {
       const_list.emplace_back(std::make_unique<MomentumFunctional>(numVars, i));
    }
-   std::vector<std::unique_ptr<ShiftedADFunction2>> constraints(numVars);
+   std::vector<std::unique_ptr<ShiftedADFunction>> constraints(numVars);
    for (int i=0; i<numVars; i++)
    {
-      constraints[i] = std::make_unique<ShiftedADFunction2>(*const_list[i],
+      constraints[i] = std::make_unique<ShiftedADFunction>(*const_list[i],
                        - target[i]);
    }
 
-   auto mu_ad = std::make_unique<ReferenceConstantADFunction2>(mu, numVars);
-   auto half_mu_ad = std::make_unique<ScaledADFunction2>(*mu_ad,0.5);
+   auto mu_ad = std::make_unique<ReferenceConstantADFunction>(mu, numVars);
+   auto half_mu_ad = std::make_unique<ScaledADFunction>(*mu_ad,0.5);
 
-   std::vector<std::unique_ptr<ReferenceConstantADFunction2>> lambda_ref(numVars);
-   std::vector<std::unique_ptr<ProductADFunction2>> lagrangians(numVars);
-   std::vector<std::unique_ptr<ProductADFunction2>> sqrd_constraints(numVars);
-   std::vector<std::unique_ptr<ProductADFunction2>> penalties(numVars);
+   std::vector<std::unique_ptr<ReferenceConstantADFunction>> lambda_ref(numVars);
+   std::vector<std::unique_ptr<ProductADFunction>> lagrangians(numVars);
+   std::vector<std::unique_ptr<ProductADFunction>> sqrd_constraints(numVars);
+   std::vector<std::unique_ptr<ProductADFunction>> penalties(numVars);
    for (int i=0; i<numVars; i++)
    {
-      lambda_ref[i] = std::make_unique<ReferenceConstantADFunction2>(lambda[i],
+      lambda_ref[i] = std::make_unique<ReferenceConstantADFunction>(lambda[i],
                       numVars);
-      lagrangians[i] = std::make_unique<ProductADFunction2>(*lambda_ref[i],
+      lagrangians[i] = std::make_unique<ProductADFunction>(*lambda_ref[i],
                        *constraints[i]);
-      sqrd_constraints[i] = std::make_unique<ProductADFunction2>(*constraints[i],
+      sqrd_constraints[i] = std::make_unique<ProductADFunction>(*constraints[i],
                             *constraints[i]);
-      penalties[i] = std::make_unique<ProductADFunction2>(*half_mu_ad,
+      penalties[i] = std::make_unique<ProductADFunction>(*half_mu_ad,
                      *sqrd_constraints[i]);
    }
 
    auto mass_energy = std::make_unique<MassEnergy>(numVars);
-   std::vector<std::unique_ptr<SumADFunction2>> TotalLagrangian(numVars);
-   std::vector<std::unique_ptr<SumADFunction2>> TotalAL(numVars);
+   std::vector<std::unique_ptr<SumADFunction>> TotalLagrangian(numVars);
+   std::vector<std::unique_ptr<SumADFunction>> TotalAL(numVars);
    for (int i=0; i<numVars; i++)
    {
       if (i == 0)
       {
-         TotalLagrangian[i] = std::make_unique<SumADFunction2>(*mass_energy,
+         TotalLagrangian[i] = std::make_unique<SumADFunction>(*mass_energy,
                               *lagrangians[i]);
       }
       else
       {
-         TotalLagrangian[i] = std::make_unique<SumADFunction2>(*TotalAL[i-1],
+         TotalLagrangian[i] = std::make_unique<SumADFunction>(*TotalAL[i-1],
                               *lagrangians[i]);
       }
-      TotalAL[i] = std::make_unique<SumADFunction2>(*TotalLagrangian[i],
+      TotalAL[i] = std::make_unique<SumADFunction>(*TotalLagrangian[i],
                    *penalties[i]);
    }
    std::vector<std::unique_ptr<FermiDiracEntropy>> entropy_list(numVars);
@@ -134,7 +134,7 @@ MakeConstraints(const Vector &target, Vector &lambda, real_t &mu, const int dim,
    for (auto &e : entropy_list) { temps.push_back(std::move(e)); }
    for (auto &p : PGAL_energy_list) { temps.push_back(std::move(p)); }
 
-   std::unique_ptr<ADFunction2> final_func = std::move(temps.back());
+   std::unique_ptr<ADFunction> final_func = std::move(temps.back());
    temps.pop_back();
 
    return {std::move(final_func), std::move(temps)};
@@ -211,7 +211,7 @@ int main(int argc, char *argv[])
 
    auto obj_and_temp = MakeConstraints(const_targets, lambda, mu, dim, x_min,
                                        x_max, latent_k);
-   ADFunction2 &pg_energy = *std::get<0>(obj_and_temp);
+   ADFunction &pg_energy = *std::get<0>(obj_and_temp);
 
    Vector xvec(pg_energy.n_input);
    xvec = 0.0;

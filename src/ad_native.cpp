@@ -3,8 +3,9 @@
 namespace mfem
 {
 
-void ADFunction::Gradient(const Vector &x, const Vector &param,
-                          Vector &J) const
+void ADFunction::Gradient(const Vector &x, ElementTransformation &Tr,
+                           const IntegrationPoint &ip,
+                           Vector &J) const
 {
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::Gradient: x.Size() must match n_input");
@@ -12,17 +13,19 @@ void ADFunction::Gradient(const Vector &x, const Vector &param,
                "ADFunction::Gradient: param.Size() must match n_param");
    J.SetSize(x.Size());
    ADVector x_ad(x);
+   ProcessParameters(Tr, ip);
    for (int i=0; i < x.Size(); i++)
    {
       x_ad[i].gradient = 1.0;
-      ADReal_t result = (*this)(x_ad, param);
+      ADReal_t result = (*this)(x_ad);
       J[i] = result.gradient;
       x_ad[i].gradient = 0.0;
    }
 }
 
-void ADFunction::Hessian(const Vector &x, const Vector &param,
-                         DenseMatrix &H) const
+void ADFunction::Hessian(const Vector &x, ElementTransformation &Tr,
+                          const IntegrationPoint &ip,
+                          DenseMatrix &H) const
 {
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::Hessian: x.Size() must match n_input");
@@ -30,13 +33,14 @@ void ADFunction::Hessian(const Vector &x, const Vector &param,
                "ADFunction::Hessian: param.Size() must match n_param");
    H.SetSize(x.Size(), x.Size());
    AD2Vector x_ad(x);
+   ProcessParameters(Tr, ip);
    for (int i=0; i<x.Size(); i++) // Loop for the first derivative
    {
       x_ad[i].value.gradient = 1.0;
       for (int j=0; j<=i; j++)
       {
          x_ad[j].gradient = ADReal_t{1.0, 0.0};
-         AD2Real_t result = (*this)(x_ad, param);
+         AD2Real_t result = (*this)(x_ad);
          H(j, i) = result.gradient.gradient;
          H(i, j) = result.gradient.gradient;
          x_ad[j].gradient = ADReal_t{0.0, 0.0}; // Reset gradient for next iteration
@@ -61,46 +65,24 @@ ProductADFunction ADFunction::operator*(const ADFunction& g) const
 ScaledADFunction ADFunction::operator*(real_t a) const
 { return ScaledADFunction(*this, a); }
 
-ADPGEnergy::ADPGEnergy(ADFunction &f, ADFunction &dual_entropy,
-                       int primal_begin)
-   : ADFunction(f.n_input + dual_entropy.n_input,
-                f.n_param + dual_entropy.n_param + 2)
-   , primal_begin(primal_begin)
-   , primal_size(dual_entropy.n_input)
-   , f(f), dual_entropy(dual_entropy)
-{
-   MFEM_VERIFY(f.n_input >= primal_begin + primal_size,
-               "ADPGEnergy: f.n_input must be larger than "
-               "primal_begin + primal_size");
-}
-
-real_t ADPGEnergy::operator()(const Vector &x, const Vector &param) const
+real_t ADPGEnergy::Eval(const Vector &x) const
 {
    // variables
    const Vector x1(x.GetData(), f.n_input);
    const Vector latent(x.GetData() + f.n_input, primal_size);
 
-   // parameters
-   const Vector p1(param.GetData(), f.n_param);
-   const Vector p2(param.GetData() + f.n_param, dual_entropy.n_param);
-
-   // previous step
-   const Vector latent_k(param.GetData()
-                         + f.n_param + dual_entropy.n_param,
-                         primal_size);
-   // step size
-   const real_t alpha = param(n_param - 1);
    // evaluate mixed value
    real_t cross_entropy = 0.0;
    for (int i=0; i<dual_entropy.n_input; i++)
    {
       cross_entropy += x1[primal_begin + i]*(latent[i] - latent_k[i]);
    }
-   return f(x1, p1) + (1.0 / alpha)*(cross_entropy - dual_entropy(latent, p2));
+   f.Eval(x1);
+   return f.Eval(x1) + (1.0 / alpha)*(cross_entropy - dual_entropy.Eval(latent));
 }
 
 // default Jacobian evaluator
-ADReal_t ADPGEnergy::operator()(const ADVector &x, const Vector &param) const
+ADReal_t ADPGEnergy::operator()(const ADVector &x) const
 {
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::operator(): x.Size() must match n_input");
@@ -113,30 +95,17 @@ ADReal_t ADPGEnergy::operator()(const ADVector &x, const Vector &param) const
    latent.SetDataAndSize(x.GetData() + f.n_input,
                          primal_size);
 
-   // parameters
-   const Vector p1(param.GetData(), f.n_param);
-   const Vector p2(param.GetData() + f.n_param, dual_entropy.n_param);
-
-   // previous step
-   const Vector latent_k(param.GetData()
-                         + f.n_param + dual_entropy.n_param,
-                         primal_size);
-
-   // step size
-   const real_t alpha = param(n_param - 1);
-
    // evaluate mixed value
    ADReal_t cross_entropy{};
    for (int i=0; i<primal_size; i++)
    {
       cross_entropy += x1[primal_begin+i]*(latent[i] - latent_k[i]);
    }
-   return f(x1, p1) + (1.0 / alpha)*(
-             cross_entropy - dual_entropy(latent, p2));
+   return f(x1) + (1.0 / alpha)*(cross_entropy - dual_entropy(latent));
 }
 
 // default Hessian evaluator
-AD2Real_t ADPGEnergy::operator()(const AD2Vector &x, const Vector &param) const
+AD2Real_t ADPGEnergy::operator()(const AD2Vector &x) const
 {
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::operator(): x.Size() must match n_input");
@@ -149,26 +118,12 @@ AD2Real_t ADPGEnergy::operator()(const AD2Vector &x, const Vector &param) const
    latent.SetDataAndSize(x.GetData() + f.n_input,
                          primal_size);
 
-   // parameters
-   const Vector p1(param.GetData(), f.n_param);
-   const Vector p2(param.GetData() + f.n_param, dual_entropy.n_param);
-
-   // previous step
-   const Vector latent_k(param.GetData()
-                         + f.n_param + dual_entropy.n_param,
-                         primal_size);
-
-   // step size
-   const real_t alpha = param(n_param - 1);
-
    // evaluate mixed value
    AD2Real_t cross_entropy{};
    for (int i=0; i<primal_size; i++)
    {
       cross_entropy += x1[primal_begin+i]*(latent[i] - latent_k[i]);
    }
-   return f(x1, p1) + (1.0 / alpha)*(
-             cross_entropy - dual_entropy(latent, p2));
+   return f(x1) + (1.0 / alpha)*(cross_entropy - dual_entropy(latent));
 }
-
 } // namespace mfem

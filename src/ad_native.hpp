@@ -6,6 +6,64 @@
 
 namespace mfem
 {
+template <typename value_type, typename gradient_type, typename other_type>
+MFEM_HOST_DEVICE
+inline future::dual<value_type, gradient_type> max(
+   future::dual<value_type, gradient_type> a,
+   other_type b)
+{
+   if (a > b)
+   {
+      return a;
+   }
+   else if (a < b)
+   {
+      if constexpr (std::is_same<other_type, real_t>::value)
+      {
+         return future::dual<value_type, gradient_type> {b};
+      }
+      else
+      {
+         return b;
+      }
+   }
+   else
+   {
+      // If values are equal, return the average (subgradient)
+      return 0.5*(a + b);
+   }
+}
+inline real_t max(const real_t a, const real_t b) { return std::max(a,b); }
+
+template <typename value_type, typename gradient_type, typename other_type>
+MFEM_HOST_DEVICE
+inline future::dual<value_type, gradient_type> min(
+   future::dual<value_type, gradient_type> a,
+   other_type b)
+{
+   if (a < b)
+   {
+      return a;
+   }
+   else if (a > b)
+   {
+      if constexpr (std::is_same<other_type, real_t>::value)
+      {
+         return future::dual<value_type, gradient_type> {b};
+      }
+      else
+      {
+         return b;
+      }
+   }
+   else
+   {
+      // If values are equal, return the average (subgradient)
+      return 0.5*(a + b);
+   }
+}
+MFEM_HOST_DEVICE
+inline real_t min(const real_t a, const real_t b) { return std::min(a,b); }
 
 // Use mfem-native autodiff types
 // If other autodiff libraries are used,
@@ -26,34 +84,49 @@ struct ProductADFunction;
 struct ScaledADFunction;
 struct ShiftedADFunction;
 // Interface for AutoDiff functions
-// Use MAKE_AD_FUNCTION macro to create a derived structure.
+// Use MAKE_AD_FUNCTION2 macro to create a derived structure.
 // The gradient is evaluated with forward mode autodiff,
 // and the Hessian is evaluated with forward over forward autodiff.
 // The Hessian is assumed to be symmetric, to save computational cost.
 // See, ADFunction::Hessian() for details.
 struct ADFunction
 {
+
+public:
+   virtual void ProcessParameters(ElementTransformation &Tr,
+                                  const IntegrationPoint &ip) const
+   {
+      // DO nothing by default
+   }
+   virtual real_t Eval(const Vector &x) const
+   { MFEM_ABORT("Not implemented. Use AD_IMPL macro to implement all path"); }
+
    int n_input;
-   int n_param;
-   ADFunction(int n_input, int n_param=0)
-      : n_input(n_input), n_param(n_param) { }
+   ADFunction(int n_input)
+      : n_input(n_input) { }
    // default evaluator
-   virtual real_t operator()(const Vector &x, const Vector &param) const
-   { MFEM_ABORT("Not implemented. Use MAKE_AD_FUNCTOR macro to create derived structure"); }
+   virtual real_t operator()(const Vector &x, ElementTransformation &Tr,
+                             const IntegrationPoint &ip) const
+   {
+      ProcessParameters(Tr, ip);
+      return Eval(x);
+   }
 
    // default Jacobian evaluator
-   virtual ADReal_t operator()(const ADVector &x, const Vector &param) const
+   virtual ADReal_t operator()(const ADVector &x) const
    { MFEM_ABORT("Not implemented. Use MAKE_AD_FUNCTOR macro to create derived structure"); }
 
    // default Hessian evaluator
-   virtual AD2Real_t operator()(const AD2Vector &x, const Vector &param) const
+   virtual AD2Real_t operator()(const AD2Vector &x) const
    { MFEM_ABORT("Not implemented. Use MAKE_AD_FUNCTOR macro to create derived structure"); }
 
    // Evaluate the gradient, using forward mode autodiff
-   virtual void Gradient(const Vector &x, const Vector &param, Vector &J) const;
+   virtual void Gradient(const Vector &x, ElementTransformation &Tr,
+                         const IntegrationPoint &ip, Vector &J) const;
    // Evaluate the Hessian, using forward over forward autodiff
    // The Hessian assumed to be symmetric.
-   virtual void Hessian(const Vector &x, const Vector &param,
+   virtual void Hessian(const Vector &x, ElementTransformation &Tr,
+                        const IntegrationPoint &ip,
                         DenseMatrix &H) const;
    SumADFunction operator+(const ADFunction& g) const;
    ShiftedADFunction operator+(real_t a) const;
@@ -62,6 +135,50 @@ struct ADFunction
    ProductADFunction operator*(const ADFunction& g) const;
    ScaledADFunction operator*(real_t a) const;
 };
+// Macro to generate type-varying implementation for ADFunction.
+// See, DiffusionEnergy, ..., for example of usage.
+// @param SCALAR is the name of templated scalar type
+// @param VEC is the name of templated vector type
+// @param MAT is the name of templated matrix type
+// @param body is the main function body. Use T() to create T-typed 0.
+#define AD_IMPL(SCALAR, VEC, MAT, var, body)                                           \
+   using ADFunction::operator();                                                      \
+   real_t Eval(const Vector &var) const override                                       \
+   {                                                                                   \
+      MFEM_ASSERT(var.Size() == n_input,                                               \
+                 "ADFunction::operator(): var.Size() must match n_input")             \
+      MFEM_ASSERT(param.Size() == n_param,                                             \
+                 "ADFunction::operator(): var.Size() must match n_input")             \
+      using SCALAR = real_t;                                                           \
+      using VEC = Vector;                                                              \
+      using MAT = DenseMatrix;                                                         \
+      body                                                                             \
+   }                                                                                   \
+                                                                                       \
+   ADReal_t operator()(const ADVector &var) const override                             \
+   {                                                                                   \
+      MFEM_ASSERT(var.Size() == n_input,                                               \
+                 "ADFunction::operator(): var.Size() must match n_input")             \
+      MFEM_ASSERT(param.Size() == n_param,                                             \
+                 "ADFunction::operator(): var.Size() must match n_input")             \
+      using SCALAR = ADReal_t;                                                         \
+      using VEC = ADVector;                                                            \
+      using MAT = ADMatrix;                                                            \
+      body                                                                             \
+   }                                                                                   \
+                                                                                       \
+   AD2Real_t operator()(const AD2Vector &var) const override                           \
+   {                                                                                   \
+      MFEM_ASSERT(var.Size() == n_input,                                               \
+                 "ADFunction::operator(): var.Size() must match n_input")             \
+      MFEM_ASSERT(param.Size() == n_param,                                             \
+                 "ADFunction::operator(): var.Size() must match n_input")             \
+      using SCALAR = AD2Real_t;                                                        \
+      using VEC = AD2Vector;                                                           \
+      using MAT = AD2Matrix;                                                           \
+      body                                                                             \
+   }
+
 
 struct ProductADFunction : public ADFunction
 {
@@ -69,23 +186,28 @@ struct ProductADFunction : public ADFunction
    const ADFunction &f2;
 
    ProductADFunction(const ADFunction &f1, const ADFunction &f2)
-      : ADFunction(f1.n_input, f1.n_param)
+      : ADFunction(f1.n_input)
       , f1(f1), f2(f2)
    {
-      MFEM_VERIFY(f1.n_input == f2.n_input && f1.n_param == f2.n_param,
+      MFEM_VERIFY(f1.n_input == f2.n_input,
                   "ProductADFunction: f1 and f2 must have the same n_input and n_param");
    }
-   // default evaluator
-   real_t operator()(const Vector &x, const Vector &param) const override
-   { return f1(x, param) * f2(x, param); }
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      f1.ProcessParameters(Tr, ip);
+      f2.ProcessParameters(Tr, ip);
+   }
 
-   // default Jacobian evaluator
-   ADReal_t operator()(const ADVector &x, const Vector &param) const override
-   { return f1(x, param) * f2(x, param); }
-
-   // default Hessian evaluator
-   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override
-   { return f1(x, param) * f2(x, param); }
+   real_t Eval(const Vector &x) const override
+   { return f1.Eval(x)*f2.Eval(x); }
+   real_t operator()(const Vector &x, ElementTransformation &Tr,
+                     const IntegrationPoint &ip) const override
+   { return f1(x, Tr, ip) * f2(x, Tr, ip); }
+   ADReal_t operator()(const ADVector &x) const override
+   { return f1(x) * f2(x); }
+   AD2Real_t operator()(const AD2Vector &x) const override
+   { return f1(x) * f2(x); }
 };
 
 struct ScaledADFunction : public ADFunction
@@ -94,48 +216,61 @@ struct ScaledADFunction : public ADFunction
    real_t a;
 
    ScaledADFunction(const ADFunction &f1, real_t a)
-      : ADFunction(f1.n_input, f1.n_param)
+      : ADFunction(f1.n_input)
       , f1(f1), a(a)
    { }
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      f1.ProcessParameters(Tr, ip);
+   }
    void SetScale(real_t a) { this->a = a; }
    // default evaluator
-   real_t operator()(const Vector &x, const Vector &param) const override
-   { return f1(x, param) * a; }
+   real_t Eval(const Vector &x) const override
+   { return f1.Eval(x)*a; }
+   real_t operator()(const Vector &x, ElementTransformation &Tr,
+                     const IntegrationPoint &ip) const override
+   { return f1(x, Tr, ip) * a; }
 
    // default Jacobian evaluator
-   ADReal_t operator()(const ADVector &x, const Vector &param) const override
-   { return f1(x, param) * a; }
+   ADReal_t operator()(const ADVector &x) const override
+   { return f1(x) * a; }
 
    // default Hessian evaluator
-   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override
-   { return f1(x, param) * a; }
+   AD2Real_t operator()(const AD2Vector &x) const override
+   { return f1(x) * a; }
 };
 
 struct ReferenceConstantADFunction : public ADFunction
 {
    real_t &a;
 
-   ReferenceConstantADFunction(real_t &a, int n_input, int n_param=0)
-      : ADFunction(n_input, n_param)
+   ReferenceConstantADFunction(real_t &a, int n_input)
+      : ADFunction(n_input)
       , a(a)
    { }
-   real_t operator()(const Vector &x, const Vector &param) const override
+   real_t operator()(const Vector &x, ElementTransformation &Tr,
+                     const IntegrationPoint &ip) const override
    { return a; }
 
    // default Jacobian evaluator
-   ADReal_t operator()(const ADVector &x, const Vector &param) const override
+   real_t Eval(const Vector &x) const override
+   { return a; }
+   ADReal_t operator()(const ADVector &x) const override
    { return ADReal_t{a, 0.0}; }
 
    // default Hessian evaluator
-   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override
+   AD2Real_t operator()(const AD2Vector &x) const override
    { return AD2Real_t{a, 0.0}; }
 
-   void Gradient(const Vector &x, const Vector &param, Vector &J) const override
+   void Gradient(const Vector &x, ElementTransformation &Tr,
+                 const IntegrationPoint &ip, Vector &J) const override
    {
       J.SetSize(x.Size());
       J = 0.0; // Gradient is zero for constant function
    }
-   void Hessian(const Vector &x, const Vector &param,
+   void Hessian(const Vector &x, ElementTransformation &Tr,
+                const IntegrationPoint &ip,
                 DenseMatrix &H) const override
    {
       H.SetSize(x.Size(), x.Size());
@@ -148,22 +283,31 @@ struct ShiftedADFunction : public ADFunction
    const ADFunction &f1;
    real_t a;
 
+
    ShiftedADFunction(const ADFunction &f1, real_t a)
-      : ADFunction(f1.n_input, f1.n_param)
+      : ADFunction(f1.n_input)
       , f1(f1), a(a)
    { }
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      f1.ProcessParameters(Tr, ip);
+   }
    void SetShift(real_t a) { this->a = a; }
    // default evaluator
-   real_t operator()(const Vector &x, const Vector &param) const override
-   { return f1(x, param) + a; }
+   real_t Eval(const Vector &x) const override
+   { return f1.Eval(x) + a; }
+   real_t operator()(const Vector &x, ElementTransformation &Tr,
+                     const IntegrationPoint &ip) const override
+   { return f1(x, Tr, ip) + a; }
 
    // default Jacobian evaluator
-   ADReal_t operator()(const ADVector &x, const Vector &param) const override
-   { return f1(x, param) + a; }
+   ADReal_t operator()(const ADVector &x) const override
+   { return f1(x) + a; }
 
    // default Hessian evaluator
-   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override
-   { return f1(x, param) + a; }
+   AD2Real_t operator()(const AD2Vector &x) const override
+   { return f1(x) + a; }
 };
 
 struct SumADFunction : public ADFunction
@@ -175,37 +319,48 @@ struct SumADFunction : public ADFunction
    mutable DenseMatrix Hess;
 
    SumADFunction(const ADFunction &f1, const ADFunction &f2, real_t a=1.0,
-                 real_t b=1.0)
-      : ADFunction(f1.n_input, f1.n_param)
+                  real_t b=1.0)
+      : ADFunction(f1.n_input)
       , f1(f1), f2(f2), a(a), b(b)
    {
-      MFEM_VERIFY(f1.n_input == f2.n_input && f1.n_param == f2.n_param,
+      MFEM_VERIFY(f1.n_input == f2.n_input,
                   "SumADFunction: f1 and f2 must have the same n_input and n_param");
    }
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      f1.ProcessParameters(Tr, ip);
+      f2.ProcessParameters(Tr, ip);
+   }
    // default evaluator
-   real_t operator()(const Vector &x, const Vector &param) const override
-   { return a*f1(x, param) + b*f2(x, param); }
+   real_t Eval(const Vector &x) const override
+   { return a*f1.Eval(x) + b*f2.Eval(x); }
+   real_t operator()(const Vector &x, ElementTransformation &Tr,
+                     const IntegrationPoint &ip) const override
+   { return a*f1(x, Tr, ip) + b*f2(x, Tr, ip); }
 
    // default Jacobian evaluator
-   ADReal_t operator()(const ADVector &x, const Vector &param) const override
-   { return a*f1(x, param) + b*f2(x, param); }
+   ADReal_t operator()(const ADVector &x) const override
+   { return a*f1(x) + b*f2(x); }
 
    // default Hessian evaluator
-   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override
-   { return a*f1(x, param) + b*f2(x, param); }
+   AD2Real_t operator()(const AD2Vector &x) const override
+   { return a*f1(x) + b*f2(x); }
 
-   void Gradient(const Vector &x, const Vector &param, Vector &J) const override
+   void Gradient(const Vector &x, ElementTransformation &Tr,
+                 const IntegrationPoint &ip, Vector &J) const override
    {
-      f1.Gradient(x, param, Jac);
-      f2.Gradient(x, param, J);
+      f1.Gradient(x, Tr, ip, Jac);
+      f2.Gradient(x, Tr, ip, J);
       J *= b;
       J.Add(a, Jac);
    }
-   void Hessian(const Vector &x, const Vector &param,
+   void Hessian(const Vector &x, ElementTransformation &Tr,
+                const IntegrationPoint &ip,
                 DenseMatrix &H) const override
    {
-      f1.Hessian(x, param, Hess);
-      f2.Hessian(x, param, H);
+      f1.Hessian(x, Tr, ip, Hess);
+      f2.Hessian(x, Tr, ip, H);
       H *= b;
       H.Add(a, Hess);
    }
@@ -225,126 +380,209 @@ struct ADPGEnergy : public ADFunction
    int primal_size;
    ADFunction &f;
    ADFunction &dual_entropy;
+   VectorCoefficient *latent_k_cf;
+   mutable Vector latent_k;
+   real_t alpha = 1.0;
+   std::unique_ptr<VectorCoefficient> owned_cf;
+
+   ADPGEnergy(ADFunction &f, ADFunction &dual_entropy, int primal_begin=0)
+      : ADFunction(f.n_input + dual_entropy.n_input)
+      , f(f), dual_entropy(dual_entropy)
+      , primal_begin(primal_begin)
+      , primal_size(dual_entropy.n_input)
+      , latent_k(primal_size)
+   {
+      MFEM_VERIFY(f.n_input >= primal_begin + primal_size,
+                  "ADPGEnergy: f.n_input must be larger than "
+                  "primal_begin + primal_size");
+   }
    ADPGEnergy(ADFunction &f, ADFunction &dual_entropy,
-              int primal_begin=0);
+              Coefficient &latent_k, int primal_begin=0)
+      : ADPGEnergy(f, dual_entropy, primal_begin)
+   {
+      SetPrevLatent(latent_k);
+   }
+   ADPGEnergy(ADFunction &f, ADFunction &dual_entropy,
+              GridFunction &latent_k, int primal_begin=0)
+      : ADPGEnergy(f, dual_entropy, primal_begin)
+   {
+      SetPrevLatent(latent_k);
+   }
+   ADPGEnergy(ADFunction &f, ADFunction &dual_entropy,
+              QuadratureFunction &latent_k, int primal_begin=0)
+      : ADPGEnergy(f, dual_entropy, primal_begin)
+   {
+      SetPrevLatent(latent_k);
+   }
 
-   real_t operator()(const Vector &x, const Vector &param) const override;
+   void SetAlpha(real_t alpha) { this->alpha = alpha; }
 
+   void SetPrevLatent(Coefficient &psi_k)
+   {
+      auto cf = new VectorArrayCoefficient(1);
+      cf->Set(0, &psi_k, false);
+      owned_cf.reset(cf);
+      latent_k_cf = cf;
+   }
+   void SetPrevLatent(GridFunction &psi_k)
+   {
+      if (psi_k.FESpace()->GetVDim() == 1)
+      {
+         auto cf = new VectorArrayCoefficient(1);
+         cf->Set(0, new GridFunctionCoefficient(&psi_k), true);
+         owned_cf.reset(cf);
+         latent_k_cf = cf;
+      }
+      else
+      {
+         owned_cf = std::make_unique<VectorGridFunctionCoefficient>(&psi_k);
+         latent_k_cf = owned_cf.get();
+      }
+   }
+   void SetPrevLatent(QuadratureFunction &psi_k)
+   {
+      if (psi_k.GetVDim() == 1)
+      {
+         auto cf = new VectorArrayCoefficient(1);
+         cf->Set(0, new QuadratureFunctionCoefficient(psi_k), true);
+         owned_cf.reset(cf);
+         latent_k_cf = cf;
+      }
+      else
+      {
+         owned_cf = std::make_unique<VectorQuadratureFunctionCoefficient>(psi_k);
+         latent_k_cf = owned_cf.get();
+      }
+   }
+   void SetPrevLatent(VectorCoefficient &psi_k_cf)
+   {
+      if (owned_cf) { owned_cf.reset(); }
+      this->latent_k_cf = &psi_k_cf;
+      latent_k.SetSize(psi_k_cf.GetVDim());
+   }
+
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      MFEM_ASSERT(latent_k_cf != nullptr,
+                  "ADPGEnergy: latent_k_cf is not set. Use SetPrevLatent() to set it.");
+      latent_k_cf->Eval(latent_k, Tr, ip);
+      dual_entropy.ProcessParameters(Tr, ip);
+      f.ProcessParameters(Tr, ip);
+   }
+
+   real_t Eval(const Vector &x) const override;
+   using ADFunction::operator();
    // default Jacobian evaluator
-   ADReal_t operator()(const ADVector &x, const Vector &param) const override;
+   ADReal_t operator()(const ADVector &x) const override;
 
    // default Hessian evaluator
-   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override;
+   AD2Real_t operator()(const AD2Vector &x) const override;
 };
 
-// Make Autodiff Function
-// See, DiffusionEnergy, ..., for example of usage.
-// @param name will be the name of the structure
-// @param SCALAR is the name of templated scalar type
-// @param VEC is the name of templated vector type
-// @param MAT is the name of templated matrix type
-// @param param is additional parameter name (will not be differentiated)
-// @param body is the main function body. Use T() to create 0 T-typed value.
-#define MAKE_AD_FUNCTION(name, SCALAR, VEC, MAT, var, param, body)                    \
-struct name : public ADFunction                                                       \
-{                                                                                     \
-   name(int n, int n_param=0)                                                         \
-      : ADFunction(n, n_param) { }                                                    \
-                                                                                      \
-   real_t operator()(const Vector &var, const Vector &param) const override           \
-   {                                                                                  \
-      MFEM_ASSERT(var.Size() == n_input,                                              \
-                 "ADFunction::operator(): var.Size() must match n_input")             \
-      MFEM_ASSERT(param.Size() == n_param,                                            \
-                 "ADFunction::operator(): var.Size() must match n_input")             \
-      using SCALAR = real_t;                                                          \
-      using VEC = Vector;                                                             \
-      using MAT = DenseMatrix;                                                        \
-      body                                                                            \
-   }                                                                                  \
-                                                                                      \
-   ADReal_t operator()(const ADVector &var, const Vector &param) const override       \
-   {                                                                                  \
-      MFEM_ASSERT(var.Size() == n_input,                                              \
-                 "ADFunction::operator(): var.Size() must match n_input")             \
-      MFEM_ASSERT(param.Size() == n_param,                                            \
-                 "ADFunction::operator(): var.Size() must match n_input")             \
-      using SCALAR = ADReal_t;                                                        \
-      using VEC = ADVector;                                                           \
-      using MAT = ADMatrix;                                                           \
-      body                                                                            \
-   }                                                                                  \
-                                                                                      \
-   AD2Real_t operator()(const AD2Vector &var, const Vector &param) const override     \
-   {                                                                                  \
-      MFEM_ASSERT(var.Size() == n_input,                                              \
-                 "ADFunction::operator(): var.Size() must match n_input")             \
-      MFEM_ASSERT(param.Size() == n_param,                                            \
-                 "ADFunction::operator(): var.Size() must match n_input")             \
-      using SCALAR = AD2Real_t;                                                       \
-      using VEC = AD2Vector;                                                          \
-      using MAT = AD2Matrix;                                                          \
-      body                                                                            \
-   }                                                                                  \
-   using ADFunction::Gradient;                                                        \
-   using ADFunction::Hessian;                                                         \
+struct MassEnergy : public ADFunction
+{
+   MassEnergy(int n_var)
+      : ADFunction(n_var)
+   {}
+   AD_IMPL(T, V, M, x, return 0.5*(x*x););
+};
+struct DiffusionEnergy : public ADFunction
+{
+   DiffusionEnergy(int dim)
+      : ADFunction(dim)
+   {}
+   AD_IMPL(T, V, M, gradu, return 0.5*(gradu*gradu););
+};
+struct HeteroDiffusionEnergy : public ADFunction
+{
+   Coefficient &K;
+   mutable real_t kappa;
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      kappa = K.Eval(Tr, ip);
+   }
+   HeteroDiffusionEnergy(int dim, Coefficient &K)
+      : ADFunction(dim), K(K)
+   {}
+
+   AD_IMPL(T, V, M, gradu, return (kappa*0.5)*(gradu*gradu);)
+};
+struct AnisoDiffuionEnergy : public ADFunction
+{
+   MatrixCoefficient &K;
+   mutable DenseMatrix kappa;
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      K.Eval(kappa, Tr, ip);
+   }
+   AnisoDiffuionEnergy(int dim, MatrixCoefficient &K)
+      : ADFunction(dim), K(K), kappa(K.GetHeight(), K.GetWidth())
+   {
+      MFEM_VERIFY(dim == K.GetHeight() && dim == K.GetWidth(),
+                  "AnisoDiffuionEnergy: K must be a square matrix of size dim");
+   }
+
+   AD_IMPL(T, V, M, gradu,
+   {
+      T result = T();
+      const int dim = gradu.Size();
+      for (int i=0; i<dim; i++)
+      {
+         for (int j=0; j<dim; j++)
+         {
+            result += kappa(i,j)*gradu[i]*gradu[j];
+         }
+      }
+      return result;
+   });
 };
 
-MAKE_AD_FUNCTION(MassEnergy, T, V, M, x, dummy,
+struct LinearElasticityEnergy : public ADFunction
 {
-   return 0.5*(x*x);
-});
-
-MAKE_AD_FUNCTION(DiffusionEnergy, T, V, M, gradu, dummy,
-{
-   return 0.5*(gradu*gradu);
-});
-
-MAKE_AD_FUNCTION(HeteroDiffusionEnergy, T, V, M, gradu, kappa,
-{
-   return (kappa[0]*0.5)*(gradu*gradu);
-});
-
-MAKE_AD_FUNCTION(AnisoDiffuionEnergy, T, V, M, gradu, kappa,
-{
-   T result = T();
-   const int dim = gradu.Size();
-   for (int i=0; i<dim; i++)
+   Coefficient *lambda_cf;
+   Coefficient *mu_cf;
+   const int dim;
+   mutable real_t lambda;
+   mutable real_t mu;
+   std::vector<std::unique_ptr<Coefficient>> owned_cf;
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
    {
-      for (int j=0; j<dim; j++)
+      lambda = lambda_cf->Eval(Tr, ip);
+      mu = mu_cf->Eval(Tr, ip);
+   }
+   LinearElasticityEnergy(int dim, Coefficient &lambda, Coefficient &mu)
+      : ADFunction(dim*dim), lambda_cf(&lambda), mu_cf(&mu), dim(dim)
+   {}
+   LinearElasticityEnergy(int dim, real_t lambda, real_t mu)
+      : ADFunction(dim*dim), dim(dim)
+   {
+      owned_cf.resize(2);
+      owned_cf[0] = std::make_unique<ConstantCoefficient>(lambda);
+      lambda_cf = owned_cf[0].get();
+      owned_cf[1] = std::make_unique<ConstantCoefficient>(mu);
+      mu_cf = owned_cf[1].get();
+   }
+   AD_IMPL(T, V, M, gradu,
+   {
+      T divnorm = T();
+      for (int i=0; i<dim; i++) { divnorm += gradu[i*dim + i]; }
+      divnorm = divnorm*divnorm;
+      T h1_norm = T();
+      for (int i=0; i<dim; i++)
       {
-         result += kappa[i*dim + j]*gradu[i]*gradu[j];
+         for (int j=0; j<dim; j++)
+         {
+            T symm = 0.5*(gradu[i*dim + j] + gradu[j*dim + i]);
+            h1_norm += symm*symm;
+         }
       }
-   }
-   return result;
-});
-
-MAKE_AD_FUNCTION(LinearElasticityEnergy, T, V, M, gradu, lame,
-{
-   const int dim = round(sqrt(gradu.Size()));
-   const real_t lambda = lame(0);
-   const real_t mu = lame(1);
-
-   T divnorm = T();
-   for (int i=0; i<dim; i++)
-   {
-      divnorm += gradu[i*dim + i];
-   }
-   divnorm = divnorm*divnorm;
-
-   T h1_norm = T();
-   for (int i=0; i<dim; i++)
-   {
-      for (int j=0; j<dim; j++)
-      {
-         T symm = 0.5*(gradu[i*dim + j] + gradu[j*dim + i]);
-         h1_norm += symm*symm;
-      }
-   }
-
-   return 0.5*lambda*divnorm + mu*h1_norm;
-});
-
+      return 0.5*lambda*divnorm + mu*h1_norm;
+   });
+};
 
 // Dual entropy for (negative) Shannon entropy (xlogx - x) with half bound
 // when bound[1] = 1, [lower, inf[
@@ -352,70 +590,138 @@ MAKE_AD_FUNCTION(LinearElasticityEnergy, T, V, M, gradu, lame,
 //
 // The resulting dual is (f(pm1*(x - shift)))^*
 // = f^*(pm1*x^*) + shift*pm1*x^*
-MAKE_AD_FUNCTION(ShannonEntropy, T, V, M, x, bound,
+struct ShannonEntropy : public ADFunction
 {
-   MFEM_ASSERT(x.Size() == 1, "ShannonEntropy: input must have size 1");
-   MFEM_ASSERT(bound.Size() == 2, "ShannonEntropy: bound must have size 2");
-   MFEM_ASSERT(std::abs(bound[1]) == 1.0, "ShannonEntropy: bound[1] must be 1 or -1");
-
-   real_t pm1 = bound[1];
-   real_t shift = bound[0];
-   return pm1*(exp(x[0]*pm1)) + shift*x[0];
-});
+   Coefficient &bound;
+   mutable real_t shift;
+   int sign;
+   ShannonEntropy(Coefficient &bound, int sign)
+      : ADFunction(1)
+      , bound(bound)
+      , sign(sign)
+   {
+      MFEM_VERIFY(sign == 1 || sign == -1,
+                  "ShannonEntropy: sign must be 1 or -1");
+   }
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      shift = bound.Eval(Tr, ip);
+   }
+   AD_IMPL(T, V, M, x, return sign*(exp(x[0]*sign)) + shift*x[0]; );
+};
 
 // Dual entropy for (negative) Fermi-Dirac with [lower, upper] bounds
-MAKE_AD_FUNCTION(FermiDiracEntropy, T, V, M, x, bound,
+struct FermiDiracEntropy : public ADFunction
 {
-   MFEM_ASSERT(x.Size() == 1, "FermiDiracEntropy: input must have size 1");
-   MFEM_ASSERT(bound.Size() == 2, "FermiDiracEntropy: bound must have size 2");
-   MFEM_ASSERT(bound[1] - bound[0] > 0, "FermiDiracEntropy: upper must be greater than lower");
+   Coefficient *upper_bound;
+   Coefficient *lower_bound;
+   std::vector<std::unique_ptr<Coefficient>> owned_cf;
+   mutable real_t shift;
+   mutable real_t scale;
 
-   const real_t scale = bound[1] - bound[0];
-   const real_t shift = bound[0];
-   T z = x[0]*scale;
-
-   // Use a numerically stable implementation of log(1+exp(z))
-   if (z > 0)
+   int sign;
+   FermiDiracEntropy(Coefficient &lower_bound, Coefficient &upper_bound)
+      : ADFunction(1)
+      , lower_bound(&lower_bound)
+      , upper_bound(&upper_bound)
+   { }
+   FermiDiracEntropy(GridFunction &lower_bound, GridFunction &upper_bound)
+      : ADFunction(1)
    {
-      return z + log(1.0 + exp(-z)) + shift*x[0];
+      MFEM_VERIFY(lower_bound.FESpace()->GetVDim() == 1 &&
+                  upper_bound.FESpace()->GetVDim() == 1,
+                  "FermiDiracEntropy: lower_bound and upper_bound must be scalar GridFunctions");
+      owned_cf.resize(2);
+      owned_cf[0] = std::make_unique<GridFunctionCoefficient>(&lower_bound);
+      this->lower_bound = owned_cf[0].get();
+      owned_cf[1] = std::make_unique<GridFunctionCoefficient>(&upper_bound);
+      this->upper_bound = owned_cf[1].get();
    }
-   else
+   FermiDiracEntropy(real_t lower_bound, real_t upper_bound)
+      : ADFunction(1)
    {
-      return log(1.0 + exp(z)) + shift*x[0];
+      owned_cf.resize(2);
+      owned_cf[0] = std::make_unique<ConstantCoefficient>(lower_bound);
+      this->lower_bound = owned_cf[0].get();
+      owned_cf[1] = std::make_unique<ConstantCoefficient>(upper_bound);
+      this->upper_bound = owned_cf[1].get();
    }
-});
 
-MAKE_AD_FUNCTION(HellingerEntropy, T, V, M, x, bound,
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      shift = lower_bound->Eval(Tr, ip);
+      scale = upper_bound->Eval(Tr, ip) - shift;
+   }
+   AD_IMPL(T, V, M, x,
+   {
+      T z = x[0]*scale;
+
+      // Use a numerically stable implementation of log(1+exp(z))
+      if (z > 0)
+      {
+         return z + log(1.0 + exp(-z)) + shift*x[0];
+      }
+      else
+      {
+         return log(1.0 + exp(z)) + shift*x[0];
+      }
+   });
+};
+// Dual entropy for (negative) Hellinger entropy with bound > 0
+struct HellingerEntropy : public ADFunction
 {
-   MFEM_ASSERT(bound.Size() == 1, "HellingerEntropy: bound must have size 2");
-   MFEM_ASSERT(bound[0] > 0, "HellingerEntropy: bound must be positive");
+   Coefficient &bound;
+   mutable real_t scale;
 
-   const real_t scale = bound[0];
-   T val_sqrd = (x*x)*(scale*scale);
-   return sqrt(1+val_sqrd);
-});
+   HellingerEntropy(Coefficient &bound)
+      : ADFunction(1), bound(bound)
+   { }
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      scale = bound.Eval(Tr, ip);
+      MFEM_VERIFY(scale > 0, "HellingerEntropy: bound must be positive");
+   }
+   AD_IMPL(T, V, M, x, return sqrt(1 + (x*x)*(scale*scale)););
+};
 
 // Dual entropy for (negative) Simplex entropy with
 // x_i >= 0 sum_i x_i = bound
 // Also known as cateborical entropy or multinomial Shannon entropy
-MAKE_AD_FUNCTION(SimplexEntropy, T, V, M, x, bound,
+struct SimplexEntropy : public ADFunction
 {
-   MFEM_ASSERT(bound.Size() == 1, "SimplexEntropy: bound must have size 1");
-   MFEM_ASSERT(bound[0] > 0, "SimplexEntropy: bound must be positive");
+   Coefficient &bound;
+   mutable real_t scale;
 
-   const real_t scale = bound[0];
-   T maxval = x[0];
-   for (int i=1; i<x.Size(); i++)
+   SimplexEntropy(Coefficient &bound)
+      : ADFunction(1), bound(bound)
+   { }
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
    {
-      maxval = max(maxval, x[i]);
+      scale = bound.Eval(Tr, ip);
+      MFEM_ASSERT(scale >= 0, "SimplexEntropy: bound must be non-negative");
+      if (scale == 0)
+      {
+         MFEM_WARNING("SimplexEntropy: bound is zero, entropy is undefined");
+      }
    }
-
-   T sum_exp = T();
-   for (int i=0; i<x.Size(); i++)
+   AD_IMPL(T, V, M, x,
    {
-      sum_exp += exp(x[i]);
-   }
-   return scale*log(sum_exp);
-});
+      T maxval = x[0];
+      for (int i=1; i<x.Size(); i++)
+      {
+         maxval = max(maxval, x[i]);
+      }
 
+      T sum_exp = T();
+      for (int i=0; i<x.Size(); i++)
+      {
+         sum_exp += exp(x[i]);
+      }
+      return scale*log(sum_exp);
+   });
+};
 }

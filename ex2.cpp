@@ -4,15 +4,15 @@
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/ad_intg2.hpp"
+#include "src/ad_intg.hpp"
 
 using namespace std;
 using namespace mfem;
 
-struct MinimalSurfaceEnergy : public ADFunction2
+struct MinimalSurfaceEnergy : public ADFunction
 {
 public:
-   MinimalSurfaceEnergy(int dim): ADFunction2(dim) {}
+   MinimalSurfaceEnergy(int dim): ADFunction(dim) {}
    AD_IMPL(T, V, M, gradu,
    {
       T h1_norm(gradu*gradu);
