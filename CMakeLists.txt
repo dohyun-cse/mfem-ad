@@ -16,6 +16,7 @@ add_library(core INTERFACE)
 # put your non-executable libraries (relative to ./src/) here.
 set(LIB
   logger
+  ad_native
 )
 
 # if a library depends on other libraries, put them like this:
@@ -95,7 +96,7 @@ target_link_libraries(core INTERFACE mfem)
 # 4. Executables
 foreach(prog ${EXECUTABLES})
   add_executable(${prog} ${prog}.cpp)
-  target_link_libraries(${prog} PRIVATE mfem logger)
+  target_link_libraries(${prog} PRIVATE core)
   set(dep_var "EXE_DEP_${prog}")
   if(DEFINED ${dep_var})
     foreach(dep ${${dep_var}})

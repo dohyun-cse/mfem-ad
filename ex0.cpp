@@ -4,7 +4,7 @@
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/ad-native.hpp"
+#include "src/ad_native.hpp"
 
 using namespace std;
 using namespace mfem;
