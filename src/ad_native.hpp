@@ -21,6 +21,10 @@ typedef future::dual<ADReal_t, ADReal_t> AD2Real_t;
 typedef TAutoDiffVector<AD2Real_t> AD2Vector;
 typedef TAutoDiffDenseMatrix<AD2Real_t> AD2Matrix;
 
+struct SumADFunction;
+struct ProductADFunction;
+struct ScaledADFunction;
+struct ShiftedADFunction;
 // Interface for AutoDiff functions
 // Use MAKE_AD_FUNCTION macro to create a derived structure.
 // The gradient is evaluated with forward mode autodiff,
@@ -51,6 +55,160 @@ struct ADFunction
    // The Hessian assumed to be symmetric.
    virtual void Hessian(const Vector &x, const Vector &param,
                         DenseMatrix &H) const;
+   SumADFunction operator+(const ADFunction& g) const;
+   ShiftedADFunction operator+(real_t a) const;
+   ShiftedADFunction operator-(real_t a) const;
+   SumADFunction Add(const ADFunction&g, const real_t a) const;
+   ProductADFunction operator*(const ADFunction& g) const;
+   ScaledADFunction operator*(real_t a) const;
+};
+
+struct ProductADFunction : public ADFunction
+{
+   const ADFunction &f1;
+   const ADFunction &f2;
+
+   ProductADFunction(const ADFunction &f1, const ADFunction &f2)
+      : ADFunction(f1.n_input, f1.n_param)
+      , f1(f1), f2(f2)
+   {
+      MFEM_VERIFY(f1.n_input == f2.n_input && f1.n_param == f2.n_param,
+                  "ProductADFunction: f1 and f2 must have the same n_input and n_param");
+   }
+   // default evaluator
+   real_t operator()(const Vector &x, const Vector &param) const override
+   { return f1(x, param) * f2(x, param); }
+
+   // default Jacobian evaluator
+   ADReal_t operator()(const ADVector &x, const Vector &param) const override
+   { return f1(x, param) * f2(x, param); }
+
+   // default Hessian evaluator
+   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override
+   { return f1(x, param) * f2(x, param); }
+};
+
+struct ScaledADFunction : public ADFunction
+{
+   const ADFunction &f1;
+   real_t a;
+
+   ScaledADFunction(const ADFunction &f1, real_t a)
+      : ADFunction(f1.n_input, f1.n_param)
+      , f1(f1), a(a)
+   { }
+   void SetScale(real_t a) { this->a = a; }
+   // default evaluator
+   real_t operator()(const Vector &x, const Vector &param) const override
+   { return f1(x, param) * a; }
+
+   // default Jacobian evaluator
+   ADReal_t operator()(const ADVector &x, const Vector &param) const override
+   { return f1(x, param) * a; }
+
+   // default Hessian evaluator
+   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override
+   { return f1(x, param) * a; }
+};
+
+struct ReferenceConstantADFunction : public ADFunction
+{
+   real_t &a;
+
+   ReferenceConstantADFunction(real_t &a, int n_input, int n_param=0)
+      : ADFunction(n_input, n_param)
+      , a(a)
+   { }
+   real_t operator()(const Vector &x, const Vector &param) const override
+   { return a; }
+
+   // default Jacobian evaluator
+   ADReal_t operator()(const ADVector &x, const Vector &param) const override
+   { return ADReal_t{a, 0.0}; }
+
+   // default Hessian evaluator
+   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override
+   { return AD2Real_t{a, 0.0}; }
+
+   void Gradient(const Vector &x, const Vector &param, Vector &J) const override
+   {
+      J.SetSize(x.Size());
+      J = 0.0; // Gradient is zero for constant function
+   }
+   void Hessian(const Vector &x, const Vector &param,
+                DenseMatrix &H) const override
+   {
+      H.SetSize(x.Size(), x.Size());
+      H = 0.0; // Hessian is zero for constant function
+   }
+};
+
+struct ShiftedADFunction : public ADFunction
+{
+   const ADFunction &f1;
+   real_t a;
+
+   ShiftedADFunction(const ADFunction &f1, real_t a)
+      : ADFunction(f1.n_input, f1.n_param)
+      , f1(f1), a(a)
+   { }
+   void SetShift(real_t a) { this->a = a; }
+   // default evaluator
+   real_t operator()(const Vector &x, const Vector &param) const override
+   { return f1(x, param) + a; }
+
+   // default Jacobian evaluator
+   ADReal_t operator()(const ADVector &x, const Vector &param) const override
+   { return f1(x, param) + a; }
+
+   // default Hessian evaluator
+   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override
+   { return f1(x, param) + a; }
+};
+
+struct SumADFunction : public ADFunction
+{
+   const ADFunction &f1;
+   const ADFunction &f2;
+   const real_t a, b;
+   mutable Vector Jac;
+   mutable DenseMatrix Hess;
+
+   SumADFunction(const ADFunction &f1, const ADFunction &f2, real_t a=1.0,
+                 real_t b=1.0)
+      : ADFunction(f1.n_input, f1.n_param)
+      , f1(f1), f2(f2), a(a), b(b)
+   {
+      MFEM_VERIFY(f1.n_input == f2.n_input && f1.n_param == f2.n_param,
+                  "SumADFunction: f1 and f2 must have the same n_input and n_param");
+   }
+   // default evaluator
+   real_t operator()(const Vector &x, const Vector &param) const override
+   { return a*f1(x, param) + b*f2(x, param); }
+
+   // default Jacobian evaluator
+   ADReal_t operator()(const ADVector &x, const Vector &param) const override
+   { return a*f1(x, param) + b*f2(x, param); }
+
+   // default Hessian evaluator
+   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override
+   { return a*f1(x, param) + b*f2(x, param); }
+
+   void Gradient(const Vector &x, const Vector &param, Vector &J) const override
+   {
+      f1.Gradient(x, param, Jac);
+      f2.Gradient(x, param, J);
+      J *= b;
+      J.Add(a, Jac);
+   }
+   void Hessian(const Vector &x, const Vector &param,
+                DenseMatrix &H) const override
+   {
+      f1.Hessian(x, param, Hess);
+      f2.Hessian(x, param, H);
+      H *= b;
+      H.Add(a, Hess);
+   }
 };
 
 // Construct augmented energy for proximal Galerkin

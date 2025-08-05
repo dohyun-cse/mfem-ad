@@ -4,7 +4,7 @@ namespace mfem
 {
 
 void ADFunction::Gradient(const Vector &x, const Vector &param,
-                                 Vector &J) const
+                          Vector &J) const
 {
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::Gradient: x.Size() must match n_input");
@@ -22,7 +22,7 @@ void ADFunction::Gradient(const Vector &x, const Vector &param,
 }
 
 void ADFunction::Hessian(const Vector &x, const Vector &param,
-                                DenseMatrix &H) const
+                         DenseMatrix &H) const
 {
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::Hessian: x.Size() must match n_input");
@@ -44,6 +44,22 @@ void ADFunction::Hessian(const Vector &x, const Vector &param,
       x_ad[i].value.gradient = 0.0;
    }
 }
+SumADFunction ADFunction::operator+(const ADFunction& g) const
+{ return SumADFunction(*this, g); }
+ShiftedADFunction ADFunction::operator+(real_t a) const
+{ return ShiftedADFunction(*this, a); }
+ShiftedADFunction ADFunction::operator-(real_t a) const
+{ return ShiftedADFunction(*this, -a); }
+
+SumADFunction ADFunction::Add(const ADFunction&g, real_t a) const
+{
+   if (a == 1.0) { return (*this) + g; }
+   else { return SumADFunction(*this, g, 1.0, a); }
+}
+ProductADFunction ADFunction::operator*(const ADFunction& g) const
+{ return ProductADFunction(*this, g); }
+ScaledADFunction ADFunction::operator*(real_t a) const
+{ return ScaledADFunction(*this, a); }
 
 ADPGEnergy::ADPGEnergy(ADFunction &f, ADFunction &dual_entropy,
                        int primal_begin)

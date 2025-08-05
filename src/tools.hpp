@@ -46,4 +46,22 @@ public:
       MUMPSSolver::SetOperator(*mono);
    };
 };
+
+inline std::tuple<std::unique_ptr<FiniteElementSpace>, std::unique_ptr<L2_FECollection>>
+QSpaceToFESpace(QuadratureSpace &qs)
+{
+   Mesh *mesh = qs.GetMesh();
+   const int dim = mesh->Dimension();
+   std::unique_ptr<L2_FECollection> fec
+      = std::make_unique<L2_FECollection> (qs.GetOrder(), dim);
+
+   std::unique_ptr<FiniteElementSpace> fes;
+#ifdef MFEM_USE_MPI
+   ParMesh *pmesh = dynamic_cast<ParMesh*>(qs.GetMesh());
+   if (pmesh) { fes = std::make_unique<ParFiniteElementSpace>(pmesh, fec.get()); }
+#endif
+   if (!fes) { fes = std::make_unique<FiniteElementSpace>(mesh, fec.get()); }
+   return std::make_tuple(std::move(fes), std::move(fec));
+}
+
 };
