@@ -1,3 +1,4 @@
+/// Example 3: AD Linear Elasticity with Vector FE
 #include "mfem.hpp"
 #include <fstream>
 #include <iostream>

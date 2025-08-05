@@ -1,3 +1,4 @@
+/// Example 4: AD Linear Elasticity with multiple Scalar FE
 #include "mfem.hpp"
 #include <fstream>
 #include <iostream>
@@ -7,12 +8,6 @@
 
 using namespace std;
 using namespace mfem;
-
-MAKE_AD_FUNCTION(BlockTestEnergy, T, V, M, x, dummy,
-{
-   return x[0]*x[1]*x[2];
-});
-
 
 int main(int argc, char *argv[])
 {
@@ -62,47 +57,58 @@ int main(int argc, char *argv[])
    Vector lame({1.0, 1.0}); // Lame parameters: lambda, mu
    LinearElasticityEnergy energy(dim*dim, 2);
 
-   NonlinearForm nlf(&fes);
-   nlf.AddDomainIntegrator(new ADNonlinearFormIntegrator<
-                           false, ADEval::GRAD | ADEval::VECTOR>(energy, dim, lame));
-   nlf.SetEssentialBC(is_bdr_ess);
+   FiniteElementSpace fes_scalar(&mesh, &fec);
+   Array<FiniteElementSpace*> fespaces(dim);
+   fespaces = &fes_scalar;
+   BlockNonlinearForm bnlf(fespaces);
+   if (dim == 2)
+   {
+      bnlf.AddDomainIntegrator(
+         new ADBlockNonlinearFormIntegrator<false, ADEval::GRAD, ADEval::GRAD>(
+            energy, lame));
+   }
+   else
+   {
+      bnlf.AddDomainIntegrator(
+         new ADBlockNonlinearFormIntegrator<false, ADEval::GRAD, ADEval::GRAD, ADEval::GRAD>
+         (
+            energy, lame));
+   }
+   Array<Array<int>*> is_bdr_ess2(dim);
+   is_bdr_ess2 = &is_bdr_ess;
+   Array<Vector*> dummies(dim); dummies = nullptr;
+   bnlf.SetEssentialBC(is_bdr_ess2, dummies);
+
    LinearForm load(&fes);
    load.AddDomainIntegrator(new VectorDomainLFIntegrator(load_cf));
    load.Assemble();
    load.SetSubVector(ess_tdof_list, 0.0);
 
+   Array<int> offsets(dim+1);
+   offsets = fes_scalar.GetVSize();
+   offsets[0] = 0;
+   offsets.PartialSum();
 
-   FiniteElementSpace fes2(&mesh, &fec);
-   Array<FiniteElementSpace*> fespaces{&fes2, &fes2};
-   BlockNonlinearForm bnlf(fespaces);
-   bnlf.AddDomainIntegrator(
-      new ADBlockNonlinearFormIntegrator<false, ADEval::GRAD, ADEval::GRAD>(
-         energy, lame));
-   Array<Array<int>*> is_bdr_ess2{&is_bdr_ess, &is_bdr_ess};
-   Array<Vector*> dummies(2);
-   bnlf.SetEssentialBC(is_bdr_ess2, dummies);
-
-   GridFunction x(&fes);
-   x = 0.0;
-   SparseMatrix mymat = static_cast<SparseMatrix&>(nlf.GetGradient(x));
+   BlockVector X(offsets);
+   GridFunction x(&fes, X, 0);
    NewtonSolver solver;
-   UMFPackSolver lin_solver;
+   CGSolver lin_solver;
+   lin_solver.SetRelTol(1e-10);
+   lin_solver.SetAbsTol(1e-10);
+   lin_solver.SetMaxIter(1e06);
    solver.SetSolver(lin_solver);
-   solver.SetOperator(nlf);
+   solver.SetOperator(bnlf);
    solver.SetAbsTol(1e-10);
    solver.SetRelTol(1e-10);
    IterativeSolver::PrintLevel pt;
    pt.iterations = true;
    solver.SetPrintLevel(pt);
-   solver.Mult(load, x);
-
-   Vector v(x.Size()), v2(x.Size());
-   nlf.Mult(x, v);
-   bnlf.Mult(x, v2);
-   out << v.DistanceTo(v2) << std::endl;
+   solver.Mult(load, X);
 
    GLVis glvis("localhost", 19916);
    glvis.Append(x, "x", "Rjc");
    glvis.Update();
+   Hypre::Finalize();
+   Mpi::Finalize();
    return 0;
 }

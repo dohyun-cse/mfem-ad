@@ -58,6 +58,116 @@ inline void ADFunction::Hessian(const Vector &x, const Vector &param,
    }
 }
 
+inline ADPGEnergy::ADPGEnergy(ADFunction &f, ADFunction &dual_entropy,
+                       int primal_begin)
+   : ADFunction(f.n_input + dual_entropy.n_input,
+                f.n_param + dual_entropy.n_param + 2)
+   , primal_begin(primal_begin)
+   , primal_size(dual_entropy.n_input)
+   , f(f), dual_entropy(dual_entropy)
+{
+   MFEM_VERIFY(f.n_input >= primal_begin + primal_size,
+               "ADPGEnergy: f.n_input must be larger than "
+               "primal_begin + primal_size");
+}
+
+inline real_t ADPGEnergy::operator()(const Vector &x, const Vector &param) const
+{
+   // variables
+   const Vector x1(x.GetData(), f.n_input);
+   const Vector latent(x.GetData() + f.n_input, primal_size);
+
+   // parameters
+   const Vector p1(param.GetData(), f.n_param);
+   const Vector p2(param.GetData() + f.n_param, dual_entropy.n_param);
+
+   // previous step
+   const Vector latent_k(param.GetData()
+                         + f.n_param + dual_entropy.n_param,
+                         primal_size);
+   // step size
+   const real_t alpha = param(n_param - 1);
+   // evaluate mixed value
+   real_t cross_entropy = 0.0;
+   for (int i=0; i<dual_entropy.n_input; i++)
+   {
+      cross_entropy += x1[primal_begin + i]*(latent[i] - latent_k[i]);
+   }
+   return f(x1, p1) + (1.0 / alpha)*(cross_entropy - dual_entropy(latent, p2));
+}
+
+// default Jacobian evaluator
+inline ADReal_t ADPGEnergy::operator()(const ADVector &x, const Vector &param) const
+{
+   MFEM_ASSERT(x.Size() == n_input,
+               "ADFunction::operator(): x.Size() must match n_input");
+   MFEM_ASSERT(param.Size() == n_param,
+               "ADFunction::operator(): param.Size() must match n_param");
+
+   // variables
+   ADVector x1, latent;
+   x1.SetDataAndSize(x.GetData(), f.n_input);
+   latent.SetDataAndSize(x.GetData() + f.n_input,
+                         primal_size);
+
+   // parameters
+   const Vector p1(param.GetData(), f.n_param);
+   const Vector p2(param.GetData() + f.n_param, dual_entropy.n_param);
+
+   // previous step
+   const Vector latent_k(param.GetData()
+                         + f.n_param + dual_entropy.n_param,
+                         primal_size);
+
+   // step size
+   const real_t alpha = param(n_param - 1);
+
+   // evaluate mixed value
+   ADReal_t cross_entropy{};
+   for (int i=0; i<primal_size; i++)
+   {
+      cross_entropy += x1[primal_begin+i]*(latent[i] - latent_k[i]);
+   }
+   return f(x1, p1) + (1.0 / alpha)*(
+             cross_entropy - dual_entropy(latent, p2));
+}
+
+// default Hessian evaluator
+inline AD2Real_t ADPGEnergy::operator()(const AD2Vector &x, const Vector &param) const
+{
+   MFEM_ASSERT(x.Size() == n_input,
+               "ADFunction::operator(): x.Size() must match n_input");
+   MFEM_ASSERT(param.Size() == n_param,
+               "ADFunction::operator(): param.Size() must match n_param");
+
+   // variables
+   AD2Vector x1, latent;
+   x1.SetDataAndSize(x.GetData(), f.n_input);
+   latent.SetDataAndSize(x.GetData() + f.n_input,
+                         primal_size);
+
+   // parameters
+   const Vector p1(param.GetData(), f.n_param);
+   const Vector p2(param.GetData() + f.n_param, dual_entropy.n_param);
+
+   // previous step
+   const Vector latent_k(param.GetData()
+                         + f.n_param + dual_entropy.n_param,
+                         primal_size);
+
+   // step size
+   const real_t alpha = param(n_param - 1);
+
+   // evaluate mixed value
+   AD2Real_t cross_entropy{};
+   for (int i=0; i<primal_size; i++)
+   {
+      cross_entropy += x1[primal_begin+i]*(latent[i] - latent_k[i]);
+   }
+   return f(x1, p1) + (1.0 / alpha)*(
+             cross_entropy - dual_entropy(latent, p2));
+}
+
 template <bool is_param_cf, ADEval mode>
 inline int ADNonlinearFormIntegrator<is_param_cf, mode>::InitInputShapes(
    const FiniteElement &el,
@@ -90,14 +200,14 @@ inline void ADNonlinearFormIntegrator<is_param_cf, mode>::CalcInputShapes(
    const FiniteElement &el,
    ElementTransformation &Tr,
    const IntegrationPoint &ip,
-   std::shared_ptr<VectorCoefficient> &parameter_cf,
+   VectorCoefficient *parameter_cf,
    Vector &parameter,
    Vector &value_shapes,
    DenseMatrix &grad_shapes)
 {
    if constexpr (is_param_cf)
    {
-      MFEM_ASSERT(parameter_cf.get() == nullptr,
+      MFEM_ASSERT(parameter_cf != nullptr,
                   "ADNonlinearFormIntegrator: "
                   "Parameter coefficient should be set before AssembleElement...");
       parameter_cf->Eval(parameter, Tr, ip);
@@ -358,14 +468,14 @@ ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::CalcInputShapes(
    const Array<const FiniteElement *>& el,
    ElementTransformation &Tr,
    const IntegrationPoint &ip,
-   std::shared_ptr<VectorCoefficient> &parameter_cf,
+   VectorCoefficient *parameter_cf,
    Vector &parameter,
    std::vector<Vector> &value_shapes,
    std::vector<DenseMatrix> &grad_shapes)
 {
    if constexpr (is_param_cf)
    {
-      MFEM_ASSERT(parameter_cf.get() == nullptr,
+      MFEM_ASSERT(parameter_cf != nullptr,
                   "ADNonlinearFormIntegrator: "
                   "Parameter coefficient should be set before AssembleElement...");
       parameter_cf->Eval(parameter, Tr, ip);
@@ -542,94 +652,96 @@ void ADBlockNonlinearFormIntegrator<is_param_cf, modes...>::AssembleElementGrad(
    const Array<const Vector *>&elfun,
    const Array2D<DenseMatrix *>&elmat)
 {
-   MFEM_ABORT("ADBlockNonlinearFormIntegrator::AssembleElementGrad: "
-              "Not yet implemented");
-   // MFEM_ASSERT(el.Size() == numSpaces,
-   //             "ADBlockNonlinearFormIntegrator: "
-   //             "el.Size() must match numSpaces");
-   // Array<int> dof(numSpaces);
-   // Array<int> order(numSpaces);
-   // for (int i=0; i<numSpaces; i++)
-   // {
-   //    dof[i] = el[i]->GetDof();
-   //    order[i] = el[i]->GetOrder();
-   // }
-   //
-   // const int sdim = Tr.GetSpaceDim();
-   // const int dim = el[0]->GetDim();
-   // for (int j=0; j<numSpaces; j++)
-   // {
-   //    for (int i=0; i<numSpaces; i++)
-   //    {
-   //       elmat(i,j)->SetSize(dof[i]*vdim[i], dof[j]*vdim[j]);
-   //       *elmat(i,j) = 0.0;
-   //    }
-   // }
-   //
-   // std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes, shape,
-   //                                     dshape));
-   // Array<int> x_idx(numSpaces+1);
-   // x_idx[0] = 0;
-   // for (int i=0; i<numSpaces; i++)
-   // {
-   //    x_idx[i+1] = shapedim[i]*vdim[i];
-   // }
-   // x_idx.PartialSum();
-   // x.SetSize(f.n_input);
-   // H.SetSize(f.n_input);
-   //
-   // _constexpr_for([&](auto vi)
-   //                {
-   // Hx.SetSize(dof, shapedim*vdim*vdim);
-   // if constexpr (hasFlag(mode, ADEval::VECTOR))
-   // {
-   //    elfun_matview.UseExternalData(const_cast<real_t*>(elfun.GetData()),
-   //                                  dof, vdim);
-   //    xmat.UseExternalData(x.GetData(), shapedim, vdim);
-   //    partelmat.SetSize(dof, dof);
-   //    Hs.UseExternalData(H.GetData(), shapedim, vdim*shapedim*vdim);
-   // }
-   //                }, std::make_index_sequence<sizeof...(modes)> {});
-   //
-   // const IntegrationRule * ir = GetIntegrationRule(el, Tr);
-   // for (int i = 0; i < ir->GetNPoints(); i++)
-   // {
-   //    const IntegrationPoint &ip = ir->IntPoint(i);
-   //    Tr.SetIntPoint(&ip);
-   //    w = ip.weight * Tr.Weight();
-   //    CalcInputShapes(el, Tr, ip, param_cf, param, shape, dshape);
-   //
-   //    // Convert dof to x = [[value, grad], [value, grad], ...]
-   //    if constexpr (hasFlag(mode, ADEval::VECTOR)) { MultAtB(allshapes, elfun_matview, xmat); }
-   //    else { allshapes.MultTranspose(elfun, x); }
-   //
-   //    f.Hessian(x, param, H);
-   //    H *= w;
-   //
-   //    if constexpr (hasFlag(mode, ADEval::VECTOR))
-   //    {
-   //       Mult(allshapes, Hs, Hx);
-   //       const int nel = shapedim*dof;
-   //       for (int c=0; c<vdim; c++)
-   //       {
-   //          for (int r=0; r<=c; r++)
-   //          {
-   //             Hxsub.UseExternalData(Hx.GetData() + (c*vdim + r)*nel, dof, shapedim);
-   //             MultABt(allshapes, Hxsub, partelmat);
-   //             elmat.AddSubMatrix(c*dof, r*dof, partelmat);
-   //             if (c != r)
-   //             {
-   //                elmat.AddSubMatrix(r*dof, c*dof, partelmat);
-   //             }
-   //          }
-   //       }
-   //    }
-   //    else
-   //    {
-   //       Mult(allshapes, H, Hx);
-   //       AddMultABt(allshapes, Hx, elmat);
-   //    }
-   // }
+   MFEM_ASSERT(el.Size() == numSpaces,
+               "ADBlockNonlinearFormIntegrator: "
+               "el.Size() must match numSpaces");
+   Array<int> dof(numSpaces);
+   Array<int> order(numSpaces);
+   for (int i=0; i<numSpaces; i++)
+   {
+      dof[i] = el[i]->GetDof();
+      order[i] = el[i]->GetOrder();
+   }
+
+   const int sdim = Tr.GetSpaceDim();
+   const int dim = el[0]->GetDim();
+   for (int j=0; j<numSpaces; j++)
+   {
+      for (int i=0; i<numSpaces; i++)
+      {
+         elmat(i,j)->SetSize(dof[i]*vdim[i], dof[j]*vdim[j]);
+         *elmat(i,j) = 0.0;
+      }
+   }
+
+   std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes, shape,
+                                       dshape));
+   Array<int> x_idx(numSpaces+1), H_idx(numSpaces+1);
+   x_idx[0] = 0;
+   H_idx[0] = 0;
+   for (int i=0; i<numSpaces; i++)
+   {
+      x_idx[i+1] = shapedim[i]*vdim[i];
+      H_idx[i+1] = shapedim[i]*vdim[i]*vdim[i];
+   }
+   x_idx.PartialSum();
+   x.SetSize(f.n_input);
+   H.SetSize(f.n_input);
+
+   _constexpr_for([&](auto vi)
+   {
+      xvar[vi].MakeRef(x, x_idx[vi], shapedim[vi]*vdim[vi]);
+      if constexpr (hasFlag(modes_arr[vi], ADEval::VECTOR))
+      {
+         elfun_matview[vi].UseExternalData(const_cast<real_t*>(elfun[vi]->GetData()),
+                                           dof[vi], vdim[vi]);
+         xmat[vi].UseExternalData(xvar[vi].GetData(), shapedim[vi], vdim[vi]);
+      }
+   }, std::make_index_sequence<sizeof...(modes)> {});
+
+   const IntegrationRule * ir = GetIntegrationRule(el, Tr);
+   real_t w;
+   for (int i = 0; i < ir->GetNPoints(); i++)
+   {
+      const IntegrationPoint &ip = ir->IntPoint(i);
+      Tr.SetIntPoint(&ip);
+      w = Tr.Weight()*ip.weight;
+
+      CalcInputShapes(el, Tr, ip, param_cf, param, shape, dshape);
+
+      _constexpr_for([&](auto vi)
+      {
+         if constexpr (hasFlag(modes_arr[vi], ADEval::VECTOR))
+         {
+            MultAtB(allshapes[vi], elfun_matview[vi], xmat[vi]);
+         }
+         else
+         {
+            allshapes[vi].MultTranspose(*elfun[vi], xvar[vi]);
+         }
+      }, std::make_index_sequence<sizeof...(modes)> {});
+      f.Hessian(x, param, H);
+      H *= w;
+      _constexpr_for([&](auto trial_i)
+      {
+         _constexpr_for([&](auto test_i)
+         {
+            H.GetSubMatrix(x_idx[test_i], x_idx[test_i+1], x_idx[trial_i], x_idx[trial_i+1],
+                           Hsub);
+            Hsub.SetSize(shapedim[test_i], vdim[test_i]*vdim[trial_i]*shapedim[trial_i]);
+            Hx.SetSize(dof[test_i], vdim[test_i]*vdim[trial_i]*shapedim[trial_i]);
+            Mult(allshapes[test_i], Hsub, Hx);
+            if constexpr (hasFlag(modes_arr[test_i], ADEval::VECTOR))
+            {
+               MFEM_ABORT("NOT YET IMPLEMENTED");
+            }
+            else
+            {
+               AddMultABt(Hx, allshapes[trial_i], *elmat(test_i, trial_i));
+            }
+         }, std::make_index_sequence<sizeof...(modes)> {});
+      }, std::make_index_sequence<sizeof...(modes)> {});
+   }
 }
 
 /// @brief Perform the local action of the NonlinearFormIntegrator resulting

@@ -21,12 +21,6 @@ typedef future::dual<ADReal_t, ADReal_t> AD2Real_t;
 typedef TAutoDiffVector<AD2Real_t> AD2Vector;
 typedef TAutoDiffDenseMatrix<AD2Real_t> AD2Matrix;
 
-inline void MultAv(const DenseMatrix &A, const Vector &v, Vector &Av)
-{
-   Av.SetSize(A.Height());
-   A.Mult(v, Av);
-}
-
 // Interface for AutoDiff functions
 // Use MAKE_AD_FUNCTION macro to create a derived structure.
 // The gradient is evaluated with forward mode autodiff,
@@ -37,7 +31,7 @@ struct ADFunction
 {
    int n_input;
    int n_param;
-   ADFunction(int n_input, int n_param)
+   ADFunction(int n_input, int n_param=0)
       : n_input(n_input), n_param(n_param) { }
    // default evaluator
    virtual real_t operator()(const Vector &x, const Vector &param) const
@@ -57,6 +51,32 @@ struct ADFunction
    // The Hessian assumed to be symmetric.
    virtual void Hessian(const Vector &x, const Vector &param,
                         DenseMatrix &H) const;
+};
+
+// Construct augmented energy for proximal Galerkin
+// psi =
+// L(u, psi) = f(u) + (1/alpha)(u*(psi-psi_k) - E^*(psi))
+// so that
+// dL/du = df/du + (1/alpha)(psi-psi_k)
+// dL/dpsi = (1/alpha)(u - dE^*(psi))
+// When primal is not full vector, set primal_begin
+// The parameter should be [org_param, entropy_param, alpha, psi_k]
+struct ADPGEnergy : public ADFunction
+{
+   int primal_begin;
+   int primal_size;
+   ADFunction &f;
+   ADFunction &dual_entropy;
+   ADPGEnergy(ADFunction &f, ADFunction &dual_entropy,
+              int primal_begin=0);
+
+   real_t operator()(const Vector &x, const Vector &param) const override;
+
+   // default Jacobian evaluator
+   ADReal_t operator()(const ADVector &x, const Vector &param) const override;
+
+   // default Hessian evaluator
+   AD2Real_t operator()(const AD2Vector &x, const Vector &param) const override;
 };
 
 // Make Autodiff Function
@@ -161,7 +181,9 @@ private:
    DenseMatrix dshape, gshape1, gshape2;
    Vector nor;
    Vector param;
-   std::shared_ptr<VectorCoefficient> param_cf;
+   std::unique_ptr<VectorCoefficient> owned_param_cf;
+   VectorCoefficient *param_cf = nullptr;
+
    Vector face_param;
    // DenseMatrix d2shape, d2shape1, d2shape2; // for hessian. Not implemented yet.
 public:
@@ -189,7 +211,7 @@ public:
                   "ADNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
                   "ADNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
-      this->param_cf = std::make_shared<VectorCoefficient>(&param_cf);
+      this->param_cf = &param_cf;
    }
 
    ADNonlinearFormIntegrator(ADFunction &f, Coefficient &param_cf,
@@ -200,9 +222,10 @@ public:
                   "ADNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(f.n_param == 1,
                   "ADNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_shared<VectorArrayCoefficient>(1);
+      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
       vec_cf->Set(0, &param_cf, false);
-      this->param_cf = std::move(vec_cf);
+      this->owned_param_cf = std::move(vec_cf);
+      this->param_cf = this->owned_param_cf.get();
    }
 
    ADNonlinearFormIntegrator(ADFunction &f, int vdim, const Vector &param,
@@ -224,7 +247,7 @@ public:
                   "ADNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
                   "ADNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
-      this->param_cf = std::make_shared<VectorCoefficient>(&param_cf);
+      this->param_cf = &param_cf;
    }
 
    ADNonlinearFormIntegrator(ADFunction &f, int vdim, Coefficient &param_cf,
@@ -235,9 +258,10 @@ public:
                   "ADNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(f.n_param == 1,
                   "ADNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_shared<VectorArrayCoefficient>(1);
+      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
       vec_cf->Set(0, &param_cf, false);
-      this->param_cf = std::move(vec_cf);
+      this->owned_param_cf = std::move(vec_cf);
+      this->param_cf = this->owned_param_cf.get();
    }
 
    // post-setter for parameter
@@ -253,7 +277,7 @@ public:
    {
       MFEM_VERIFY(is_param_cf,
                   "ADNonlinearFormIntegrator: Expected constant parameter");
-      this->param_cf = std::make_shared<VectorCoefficient>(&param_cf);
+      this->param_cf = &param_cf;
    }
 
    // post-setter for parameter coefficient with scalar coefficient
@@ -263,9 +287,10 @@ public:
                   "ADNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(f.n_param == 1,
                   "ADNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_shared<VectorArrayCoefficient>(1);
+      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
       vec_cf->Set(0, &param_cf, false);
-      this->param_cf = std::move(vec_cf);
+      this->owned_param_cf = std::move(vec_cf);
+      this->param_cf = this->owned_param_cf.get();
    }
 
    const IntegrationRule* GetDefaultIntegrationRule(
@@ -322,7 +347,7 @@ protected:
    inline static void CalcInputShapes(const FiniteElement &el,
                                       ElementTransformation &Tr,
                                       const IntegrationPoint &ip,
-                                      std::shared_ptr<VectorCoefficient> &parameter_cf,
+                                      VectorCoefficient *parameter_cf,
                                       Vector &parameter,
                                       Vector &value_shapes,
                                       DenseMatrix &grad_shapes);
@@ -343,7 +368,7 @@ MAKE_AD_FUNCTION(DiffusionEnergy, T, V, M, gradu, dummy,
 
 MAKE_AD_FUNCTION(HeteroDiffusionEnergy, T, V, M, gradu, kappa,
 {
-   return (kappa(0)*0.5)*(gradu*gradu);
+   return (kappa[0]*0.5)*(gradu*gradu);
 });
 
 MAKE_AD_FUNCTION(AnisoDiffuionEnergy, T, V, M, gradu, kappa,
@@ -354,7 +379,7 @@ MAKE_AD_FUNCTION(AnisoDiffuionEnergy, T, V, M, gradu, kappa,
    {
       for (int j=0; j<dim; j++)
       {
-         result += kappa(i*dim + j)*gradu(i)*gradu(j);
+         result += kappa[i*dim + j]*gradu[i]*gradu[j];
       }
    }
    return result;
@@ -369,7 +394,7 @@ MAKE_AD_FUNCTION(LinearElasticityEnergy, T, V, M, gradu, lame,
    T divnorm = T();
    for (int i=0; i<dim; i++)
    {
-      divnorm += gradu(i*dim + i);
+      divnorm += gradu[i*dim + i];
    }
    divnorm = divnorm*divnorm;
 
@@ -378,12 +403,144 @@ MAKE_AD_FUNCTION(LinearElasticityEnergy, T, V, M, gradu, lame,
    {
       for (int j=0; j<dim; j++)
       {
-         T symm = 0.5*(gradu(i*dim + j) + gradu(j*dim + i));
+         T symm = 0.5*(gradu[i*dim + j] + gradu[j*dim + i]);
          h1_norm += symm*symm;
       }
    }
 
    return 0.5*lambda*divnorm + mu*h1_norm;
+});
+
+template <typename value_type, typename gradient_type, typename other_type>
+MFEM_HOST_DEVICE
+inline future::dual<value_type, gradient_type> max(
+   future::dual<value_type, gradient_type> a,
+   other_type b)
+{
+   if (a > b)
+   {
+      return a;
+   }
+   else if (a < b)
+   {
+      if constexpr (std::is_same<other_type, real_t>::value)
+      {
+         return future::dual<value_type, gradient_type> {b};
+      }
+      else
+      {
+         return b;
+      }
+   }
+   else
+   {
+      // If values are equal, return the average (subgradient)
+      return 0.5*(a + b);
+   }
+}
+inline real_t max(const real_t a, const real_t b) { return std::max(a,b); }
+
+template <typename value_type, typename gradient_type, typename other_type>
+MFEM_HOST_DEVICE
+inline future::dual<value_type, gradient_type> min(
+   future::dual<value_type, gradient_type> a,
+   other_type b)
+{
+   if (a < b)
+   {
+      return a;
+   }
+   else if (a > b)
+   {
+      if constexpr (std::is_same<other_type, real_t>::value)
+      {
+         return future::dual<value_type, gradient_type> {b};
+      }
+      else
+      {
+         return b;
+      }
+   }
+   else
+   {
+      // If values are equal, return the average (subgradient)
+      return 0.5*(a + b);
+   }
+}
+MFEM_HOST_DEVICE
+inline real_t min(const real_t a, const real_t b) { return std::min(a,b); }
+
+
+// Dual entropy for (negative) Shannon entropy (xlogx - x) with half bound
+// when bound[1] = 1, [lower, inf[
+// when bound[1] = -1, ]-inf, upper]
+//
+// The resulting dual is (f(pm1*(x - shift)))^*
+// = f^*(pm1*x^*) + shift*pm1*x^*
+MAKE_AD_FUNCTION(ShannonEntropy, T, V, M, x, bound,
+{
+   MFEM_ASSERT(x.Size() == 1, "ShannonEntropy: input must have size 1");
+   MFEM_ASSERT(bound.Size() == 2, "ShannonEntropy: bound must have size 2");
+   MFEM_ASSERT(std::abs(bound[1]) == 1.0, "ShannonEntropy: bound[1] must be 1 or -1");
+
+   real_t pm1 = bound[1];
+   real_t shift = bound[0];
+   return pm1*(exp(x[0]*pm1)) + shift*x[0];
+});
+
+// Dual entropy for (negative) Fermi-Dirac with [lower, upper] bounds
+MAKE_AD_FUNCTION(FermiDiracEntropy, T, V, M, x, bound,
+{
+   MFEM_ASSERT(x.Size() == 1, "FermiDiracEntropy: input must have size 1");
+   MFEM_ASSERT(bound.Size() == 2, "FermiDiracEntropy: bound must have size 2");
+   MFEM_ASSERT(bound[1] - bound[0] > 0, "FermiDiracEntropy: upper must be greater than lower");
+
+   const real_t scale = bound[1] - bound[0];
+   const real_t shift = bound[0];
+   T z = x[0]*scale;
+
+   // Use a numerically stable implementation of log(1+exp(z))
+   if (z > 0)
+   {
+      return z + log(1.0 + exp(-z)) + shift*x[0];
+   }
+   else
+   {
+      return log(1.0 + exp(z)) + shift*x[0];
+   }
+});
+
+MAKE_AD_FUNCTION(HellingerEntropy, T, V, M, x, bound,
+{
+   MFEM_ASSERT(bound.Size() == 1, "HellingerEntropy: bound must have size 2");
+   MFEM_ASSERT(bound[0] > 0, "HellingerEntropy: bound must be positive");
+
+   const real_t scale = bound[0];
+   T val_sqrd = (x*x)*(scale*scale);
+   return sqrt(1+val_sqrd);
+});
+
+// Dual entropy for (negative) Simplex entropy with
+// x_i >= 0 sum_i x_i = bound
+// Also known as cateborical entropy or multinomial Shannon entropy
+MAKE_AD_FUNCTION(SimplexEntropy, T, V, M, x, bound,
+{
+   MFEM_ASSERT(bound.Size() == 1, "SimplexEntropy: bound must have size 1");
+   MFEM_ASSERT(bound[0] > 0, "SimplexEntropy: bound must be positive");
+
+   const real_t scale = bound[0];
+   T maxval = x[0];
+   for (int i=1; i<x.Size(); i++)
+   {
+      maxval = max(maxval, x[i]);
+   }
+
+   T sum_exp = T();
+   for (int i=0; i<x.Size(); i++)
+   {
+      sum_exp += exp(x[i]);
+   }
+   return scale*log(sum_exp);
 });
 
 template <bool is_param_cf, ADEval... modes>
@@ -415,10 +572,12 @@ private:
    Vector x, jac;
    std::vector<Vector> xvar, jacVar;
    DenseMatrix H;
-   std::vector<DenseMatrix> Hx;
+   DenseMatrix Hsub;
+   DenseMatrix Hx;
+   DenseMatrix Hxsub;
 
    // only if ADEvalInput::VECTOR. Each column corresponds to a vector component
-   std::vector<DenseMatrix> xmat, jacVarMat, Hs, Hxsub;
+   std::vector<DenseMatrix> xmat, jacVarMat, Hs;
    std::vector<DenseMatrix> elfun_matview, elvectmat, partelmat;
 
    std::vector<DenseMatrix> allshapes; // all shapes, [?shape, ?dshape]
@@ -427,11 +586,14 @@ private:
    std::vector<DenseMatrix> dshape, gshape1, gshape2;
    Vector nor;
    Vector param;
-   std::shared_ptr<VectorCoefficient> param_cf;
+   // owned cf
+   std::unique_ptr<VectorCoefficient> owned_param_cf;
+   VectorCoefficient *param_cf = nullptr;
    Vector face_param;
    // DenseMatrix d2shape, d2shape1, d2shape2; // for hessian. Not implemented yet.
 public:
-   ADBlockNonlinearFormIntegrator(ADFunction &f, IntegrationRule *ir = nullptr)
+   ADBlockNonlinearFormIntegrator(ADFunction &f,
+                                  const IntegrationRule *ir = nullptr)
       : IntRule(ir), f(f), vdim(numSpaces)
       , allshapes(numSpaces)
       , xvar(numSpaces), jacVar(numSpaces)
@@ -446,17 +608,17 @@ public:
    { vdim = 1; }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, std::initializer_list<int> vdim,
-                                  IntegrationRule *ir = nullptr)
+                                  const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, ir), vdim(vdim)
    {}
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
-                                  IntegrationRule *ir = nullptr)
+                                  const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, ir)
    { this->vdim = vdim; }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, const Vector &param,
-                                  IntegrationRule *ir = nullptr)
+                                  const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, ir)
    {
       MFEM_VERIFY(!is_param_cf,
@@ -467,32 +629,33 @@ public:
    }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, VectorCoefficient &param_cf,
-                                  IntegrationRule *ir = nullptr)
+                                  const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, ir)
    {
       MFEM_VERIFY(is_param_cf,
                   "ADBlockNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
                   "ADBlockNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
-      this->param_cf = std::make_shared<VectorCoefficient>(&param_cf);
+      this->param_cf = &param_cf;
    }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, Coefficient &param_cf,
-                                  IntegrationRule *ir = nullptr)
+                                  const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, ir)
    {
       MFEM_VERIFY(is_param_cf,
                   "ADBlockNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(f.n_param == 1,
                   "ADBlockNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_shared<VectorArrayCoefficient>(1);
+      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
       vec_cf->Set(0, &param_cf, false);
-      this->param_cf = std::move(vec_cf);
+      this->owned_param_cf = std::move(vec_cf);
+      this->param_cf = this->owned_param_cf.get();
    }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
                                   const Vector &param,
-                                  IntegrationRule *ir = nullptr)
+                                  const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, vdim, ir)
    {
       MFEM_VERIFY(!is_param_cf,
@@ -504,28 +667,29 @@ public:
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
                                   VectorCoefficient &param_cf,
-                                  IntegrationRule *ir = nullptr)
+                                  const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, vdim, ir)
    {
       MFEM_VERIFY(is_param_cf,
                   "ADBlockNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(param_cf.GetVDim() == f.n_param,
                   "ADBlockNonlinearFormIntegrator: param_cf.GetVDim() must match n_param");
-      this->param_cf = std::make_shared<VectorCoefficient>(&param_cf);
+      this->param_cf = &param_cf;
    }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
                                   Coefficient &param_cf,
-                                  IntegrationRule *ir = nullptr)
+                                  const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, vdim, ir)
    {
       MFEM_VERIFY(is_param_cf,
                   "ADBlockNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(f.n_param == 1,
                   "ADBlockNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_shared<VectorArrayCoefficient>(1);
+      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
       vec_cf->Set(0, &param_cf, false);
-      this->param_cf = std::move(vec_cf);
+      this->owned_param_cf = std::move(vec_cf);
+      this->param_cf = this->owned_param_cf.get();
    }
 
    // post-setter for parameter
@@ -541,7 +705,7 @@ public:
    {
       MFEM_VERIFY(is_param_cf,
                   "ADBlockNonlinearFormIntegrator: Expected constant parameter");
-      this->param_cf = std::make_shared<VectorCoefficient>(&param_cf);
+      this->param_cf = &param_cf;
    }
 
    // post-setter for parameter coefficient with scalar coefficient
@@ -551,9 +715,10 @@ public:
                   "ADBlockNonlinearFormIntegrator: Expected constant parameter");
       MFEM_VERIFY(f.n_param == 1,
                   "ADBlockNonlinearFormIntegrator: f takes more than one parameter, but only one coefficient is given");
-      auto vec_cf = std::make_shared<VectorArrayCoefficient>(1);
+      auto vec_cf = std::make_unique<VectorArrayCoefficient>(1);
       vec_cf->Set(0, &param_cf, false);
-      this->param_cf = std::move(vec_cf);
+      this->owned_param_cf = std::move(vec_cf);
+      this->param_cf = this->owned_param_cf.get();
    }
 
    virtual void SetIntRule(const IntegrationRule *ir)
@@ -657,7 +822,7 @@ protected:
       const Array<const FiniteElement *>& el,
       ElementTransformation &Tr,
       const IntegrationPoint &ip,
-      std::shared_ptr<VectorCoefficient> &parameter_cf,
+      VectorCoefficient *parameter_cf,
       Vector &parameter,
       std::vector<Vector> &value_shapes,
       std::vector<DenseMatrix> &grad_shapes);
