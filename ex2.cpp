@@ -12,11 +12,14 @@ using namespace mfem;
 struct MinimalSurfaceEnergy : public ADFunction
 {
 public:
+   real_t eps=0.5; // regularization
    MinimalSurfaceEnergy(int dim): ADFunction(dim) {}
    AD_IMPL(T, V, M, gradu,
    {
       T h1_norm(gradu*gradu);
-      return sqrt(h1_norm + 1.0)*h1_norm * 0.5;
+      // sqrt(1+ ||grad u||^2)
+      // dJ/du = 0 -> minimal surface
+      return sqrt(h1_norm + 1.0) + eps*h1_norm;
    });
 };
 
@@ -51,10 +54,11 @@ int main(int argc, char *argv[])
    {
       mesh.UniformRefinement();
    }
-   FunctionCoefficient load_cf([](const Vector &x)
+   FunctionCoefficient bdry_cf([](const Vector &x)
    {
       real_t theta = std::atan2(x(1)-0.5, x(0)-0.5);
-      return std::sin(5*theta);
+      real_t r = std::sqrt(std::pow(x(0)-0.5, 2.0) + std::pow(x(1)-0.5, 2.0));
+      return r*std::cos(2*theta);
    });
 
    H1_FECollection fec(order, dim);
@@ -71,7 +75,7 @@ int main(int argc, char *argv[])
 
    GridFunction x(&fes);
    x = 0.0;
-   x.ProjectBdrCoefficient(load_cf, is_bdr_ess);
+   x.ProjectBdrCoefficient(bdry_cf, is_bdr_ess);
    NewtonSolver solver;
    UMFPackSolver lin_solver;
    solver.SetSolver(lin_solver);
@@ -81,10 +85,17 @@ int main(int argc, char *argv[])
    IterativeSolver::PrintLevel print_level;
    print_level.iterations = 1;
    solver.SetPrintLevel(print_level);
+   solver.SetMaxIter(100);
+   solver.iterative_mode = true;
    Vector dummy(0);
-   solver.Mult(dummy, x);
    GLVis glvis("localhost", 19916);
    glvis.Append(x, "x", "Rjc");
    glvis.Update();
+   for (int i=0; i<30; i++)
+   {
+      solver.Mult(dummy, x);
+      glvis.Update();
+      energy.eps *= 0.5;
+   }
    return 0;
 }
