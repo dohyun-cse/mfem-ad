@@ -345,64 +345,6 @@ MAKE_AD_FUNCTION(LinearElasticityEnergy, T, V, M, gradu, lame,
    return 0.5*lambda*divnorm + mu*h1_norm;
 });
 
-template <typename value_type, typename gradient_type, typename other_type>
-MFEM_HOST_DEVICE
-inline future::dual<value_type, gradient_type> max(
-   future::dual<value_type, gradient_type> a,
-   other_type b)
-{
-   if (a > b)
-   {
-      return a;
-   }
-   else if (a < b)
-   {
-      if constexpr (std::is_same<other_type, real_t>::value)
-      {
-         return future::dual<value_type, gradient_type> {b};
-      }
-      else
-      {
-         return b;
-      }
-   }
-   else
-   {
-      // If values are equal, return the average (subgradient)
-      return 0.5*(a + b);
-   }
-}
-inline real_t max(const real_t a, const real_t b) { return std::max(a,b); }
-
-template <typename value_type, typename gradient_type, typename other_type>
-MFEM_HOST_DEVICE
-inline future::dual<value_type, gradient_type> min(
-   future::dual<value_type, gradient_type> a,
-   other_type b)
-{
-   if (a < b)
-   {
-      return a;
-   }
-   else if (a > b)
-   {
-      if constexpr (std::is_same<other_type, real_t>::value)
-      {
-         return future::dual<value_type, gradient_type> {b};
-      }
-      else
-      {
-         return b;
-      }
-   }
-   else
-   {
-      // If values are equal, return the average (subgradient)
-      return 0.5*(a + b);
-   }
-}
-MFEM_HOST_DEVICE
-inline real_t min(const real_t a, const real_t b) { return std::min(a,b); }
 
 // Dual entropy for (negative) Shannon entropy (xlogx - x) with half bound
 // when bound[1] = 1, [lower, inf[

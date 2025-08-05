@@ -4,7 +4,7 @@
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/ad_intg.hpp"
+#include "src/ad_intg2.hpp"
 
 using namespace std;
 using namespace mfem;
@@ -55,16 +55,11 @@ int main(int argc, char *argv[])
    Array<int> ess_tdof_list;
    fes.GetEssentialTrueDofs(is_bdr_ess, ess_tdof_list);
 
-   Vector lame({1.0, 1.0}); // Lame parameters: lambda, mu
-   LinearElasticityEnergy energy(dim*dim, 2);
+   LinearElasticityEnergy energy(dim, 1.0, 1.0);
 
    NonlinearForm nlf(&fes);
-   {
-      constexpr auto mode = ADEval::GRAD | ADEval::VECTOR;
-      auto *intg = new ADNonlinearFormIntegrator<false, mode>(energy, dim);
-      intg->SetParameter(lame);
-      nlf.AddDomainIntegrator(intg);
-   }
+   nlf.AddDomainIntegrator(
+      new ADNonlinearFormIntegrator<ADEval::GRAD | ADEval::VECTOR>(energy, dim));
    nlf.SetEssentialBC(is_bdr_ess);
    LinearForm load(&fes);
    load.AddDomainIntegrator(new VectorDomainLFIntegrator(load_cf));

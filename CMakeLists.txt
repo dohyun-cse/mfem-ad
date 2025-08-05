@@ -16,7 +16,7 @@ add_library(core INTERFACE)
 # put your non-executable libraries (relative to ./src/) here.
 set(LIB
   logger
-  ad_native
+  ad_native2
 )
 
 # if a library depends on other libraries, put them like this:

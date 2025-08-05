@@ -1,21 +1,43 @@
-/// Example 4: AD Linear Elasticity with multiple Scalar FE
+/// Example 5: AD Obstacle Problem with PG
 #include "mfem.hpp"
 #include <fstream>
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/ad_intg.hpp"
+#include "src/ad_intg2.hpp"
+#include "src/tools.hpp"
 
 using namespace std;
 using namespace mfem;
 
+
+struct ObstacleEnergy : public ADFunction2
+{
+   ObstacleEnergy(int dim) : ADFunction2(dim+1) {}
+   AD_IMPL(T, V, M, x,
+   {
+      T result = {};
+      // First component is u. Others are grad u
+      for (int i=1; i<x.Size(); i++)
+      {
+         result += x[i]*x[i];
+      }
+      return result*0.5;
+   });
+};
+
 int main(int argc, char *argv[])
 {
+   Mpi::Init();
+   int num_procs = Mpi::WorldSize();
+   int myid = Mpi::WorldRank();
+   Hypre::Init();
+   MPI_Comm comm = MPI_COMM_WORLD;
    // file name to be saved
    std::stringstream filename;
    filename << "ad-diffusion";
 
-   int order = 1;
+   int order = 2;
    int ref_levels = 3;
    bool visualization = false;
    bool paraview = false;
@@ -31,84 +53,123 @@ int main(int argc, char *argv[])
                   "-no-pv", "--no-paraview",
                   "Enable Paraview Export. Default is false");
    args.ParseCheck();
+   if (myid != 0) { out.Disable(); }
 
    // Mesh mesh = rhs_fun_circle
-   Mesh mesh = Mesh::MakeCartesian2D(10, 10,
-                                     Element::QUADRILATERAL);
-   const int dim = mesh.Dimension();
+   Mesh ser_mesh = Mesh::MakeCartesian2D(10, 10,
+                                         Element::QUADRILATERAL);
+   const int dim = ser_mesh.Dimension();
    for (int i = 0; i < ref_levels; i++)
    {
-      mesh.UniformRefinement();
+      ser_mesh.UniformRefinement();
    }
-   VectorFunctionCoefficient load_cf(dim, [dim](const Vector &x, Vector &y)
+   ParMesh mesh(MPI_COMM_WORLD, ser_mesh);
+
+   const int numBdrAttr = mesh.bdr_attributes.Max();
+   Array<int> is_bdr_ess1(numBdrAttr);
+   is_bdr_ess1 = 1;
+   Array<int> is_bdr_ess2(numBdrAttr);
+   is_bdr_ess2 = 0;
+   Array<Array<int>*> is_bdr_ess{&is_bdr_ess1, &is_bdr_ess2};
+   FunctionCoefficient load_cf([](const Vector &x)
    {
-      y.SetSize(dim);
-      y = 1.0;
+      return 2*M_PI * M_PI * std::sin(M_PI * x(0)) * std::sin(M_PI * x(1));
    });
+   ObstacleEnergy obj_energy(dim);
 
-   H1_FECollection fec(order, dim);
-   FiniteElementSpace fes(&mesh, &fec, dim);
-   Array<int> is_bdr_ess(mesh.bdr_attributes.Max());
-   is_bdr_ess = 0;
-   is_bdr_ess[3] = 1;
+   H1_FECollection h1_fec(order+1, dim);
+   L2_FECollection l2_fec(order-1, dim);
+   ParFiniteElementSpace h1_fes(&mesh, &h1_fec);
+   ParFiniteElementSpace l2_fes(&mesh, &l2_fec);
+   QuadratureSpace visspace(&mesh, order+3);
+   const IntegrationRule &ir = IntRules.Get(Geometry::Type::SQUARE, 3*order + 3);
+
    Array<int> ess_tdof_list;
-   fes.GetEssentialTrueDofs(is_bdr_ess, ess_tdof_list);
+   h1_fes.GetEssentialTrueDofs(is_bdr_ess1, ess_tdof_list);
 
-   Vector lame({1.0, 1.0}); // Lame parameters: lambda, mu
-   LinearElasticityEnergy energy(dim*dim, 2);
-
-   FiniteElementSpace fes_scalar(&mesh, &fec);
-   Array<FiniteElementSpace*> fespaces(dim);
-   fespaces = &fes_scalar;
-   BlockNonlinearForm bnlf(fespaces);
-   if (dim == 2)
-   {
-      bnlf.AddDomainIntegrator(
-         new ADBlockNonlinearFormIntegrator<false, ADEval::GRAD, ADEval::GRAD>(
-            energy, lame));
-   }
-   else
-   {
-      bnlf.AddDomainIntegrator(
-         new ADBlockNonlinearFormIntegrator<false, ADEval::GRAD, ADEval::GRAD, ADEval::GRAD>
-         (
-            energy, lame));
-   }
-   Array<Array<int>*> is_bdr_ess2(dim);
-   is_bdr_ess2 = &is_bdr_ess;
-   Array<Vector*> dummies(dim); dummies = nullptr;
-   bnlf.SetEssentialBC(is_bdr_ess2, dummies);
-
-   LinearForm load(&fes);
-   load.AddDomainIntegrator(new VectorDomainLFIntegrator(load_cf));
-   load.Assemble();
-   load.SetSubVector(ess_tdof_list, 0.0);
-
-   Array<int> offsets(dim+1);
-   offsets = fes_scalar.GetVSize();
+   Array<int> offsets(3);
    offsets[0] = 0;
+   offsets[1] = h1_fes.GetTrueVSize();
+   offsets[2] = l2_fes.GetTrueVSize();
    offsets.PartialSum();
+   BlockVector x_and_psi(offsets);
 
-   BlockVector X(offsets);
-   GridFunction x(&fes, X, 0);
-   NewtonSolver solver;
-   CGSolver lin_solver;
-   lin_solver.SetRelTol(1e-10);
-   lin_solver.SetAbsTol(1e-10);
-   lin_solver.SetMaxIter(1e06);
+   ParGridFunction x(&h1_fes), psi(&l2_fes);
+   QuadratureFunction x_mapped(&visspace);
+   MappedGridFunctionCoefficient x_mapped_cf(&psi, [](const real_t x) { return std::exp(x); });
+   ParGridFunction psik(psi);
+
+   x.MakeTRef(&h1_fes, x_and_psi.GetBlock(0).GetData());
+   x = 0.0; x.SetTrueVector();
+
+   psi.MakeTRef(&l2_fes, x_and_psi.GetBlock(1).GetData());
+   psi = 0.0; psi.SetTrueVector();
+   ConstantCoefficient lower_bound(0.0);
+   ConstantCoefficient upper_bound(0.5);
+   FermiDiracEntropy entropy(lower_bound, upper_bound);
+   ADPGEnergy pg_energy(obj_energy, entropy, psik);
+
+   Array<ParFiniteElementSpace*> fespaces{&h1_fes, &l2_fes};
+   ParBlockNonlinearForm bnlf(fespaces);
+   constexpr ADEval u_mode = ADEval::VALUE | ADEval::GRAD;
+   constexpr ADEval psi_mode = ADEval::VALUE;
+   bnlf.AddDomainIntegrator(
+      new ADBlockNonlinearFormIntegrator<u_mode, psi_mode>(
+         pg_energy, &ir)
+   );
+
+   BlockVector rhs(offsets);
+   ParLinearForm b(&h1_fes);
+   b.AddDomainIntegrator(new DomainLFIntegrator(load_cf));
+   b.Assemble();
+   b.ParallelAssemble(rhs.GetBlock(0));
+   rhs.GetBlock(0).SetSubVector(ess_tdof_list, 0.0);
+   rhs.GetBlock(1) = 0.0;
+
+   Array<Vector*> rhs_list{&rhs.GetBlock(0), &rhs.GetBlock(1)};
+   bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
+
+
+   MUMPSMonoSolver lin_solver(MPI_COMM_WORLD);
+   NewtonSolver solver(MPI_COMM_WORLD);
    solver.SetSolver(lin_solver);
    solver.SetOperator(bnlf);
-   solver.SetAbsTol(1e-10);
-   solver.SetRelTol(1e-10);
-   IterativeSolver::PrintLevel pt;
-   pt.iterations = true;
-   solver.SetPrintLevel(pt);
-   solver.Mult(load, X);
+   IterativeSolver::PrintLevel print_level;
+   print_level.iterations = true;
+   solver.SetPrintLevel(print_level);
+   solver.SetAbsTol(1e-09);
+   solver.SetRelTol(0.0);
+   solver.iterative_mode = true;
 
-   GLVis glvis("localhost", 19916);
-   glvis.Append(x, "x", "Rjc");
+   GLVis glvis("localhost", 19916, 400, 350, 2);
+   glvis.Append(x, "x", "Rjclmm");
+   // glvis.Append(x_mapped, "U(psi)", "Rjclmm");
    glvis.Update();
-   Hypre::Finalize();
-   Mpi::Finalize();
+
+   for (int i=0; i<100; i++)
+   {
+      out << "PG iteration " << i + 1 << std::endl;
+      pg_energy.SetAlpha(1.0);
+      psik = psi;
+      psik.SetTrueVector();
+      solver.Mult(rhs, x_and_psi);
+      if (solver.GetNumIterations() == 0)
+      {
+         out << "  Newton Converged without iterations. Terminating." << std::endl;
+         out << "PG Converged in " << i + 1
+             << " with final residual: " << solver.GetFinalNorm() << std::endl;
+         break;
+      }
+      else
+      {
+         out << "  Newton converged in " << solver.GetNumIterations()
+             << " with residual " << solver.GetFinalNorm() << std::endl;
+      }
+      x.SetFromTrueVector();
+      psi.SetFromTrueVector();
+      x_mapped_cf.Project(x_mapped);
+      glvis.Update();
+   }
+
    return 0;
 }

@@ -4,16 +4,21 @@
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/ad_intg.hpp"
+#include "src/ad_intg2.hpp"
 
 using namespace std;
 using namespace mfem;
 
-MAKE_AD_FUNCTION(MinimalSurfaceEnergy, T, V, M, gradu, dummy,
+struct MinimalSurfaceEnergy : public ADFunction2
 {
-   T h1_norm(gradu*gradu);
-   return sqrt(h1_norm + 1.0)*h1_norm * 0.5;
-});
+public:
+   MinimalSurfaceEnergy(int dim): ADFunction2(dim) {}
+   AD_IMPL(T, V, M, gradu,
+   {
+      T h1_norm(gradu*gradu);
+      return sqrt(h1_norm + 1.0)*h1_norm * 0.5;
+   });
+};
 
 int main(int argc, char *argv[])
 {
@@ -60,7 +65,7 @@ int main(int argc, char *argv[])
    MinimalSurfaceEnergy energy(dim);
 
    NonlinearForm nlf(&fes);
-   nlf.AddDomainIntegrator(new ADNonlinearFormIntegrator<false, ADEval::GRAD>
+   nlf.AddDomainIntegrator(new ADNonlinearFormIntegrator<ADEval::GRAD>
                            (energy));
    nlf.SetEssentialBC(is_bdr_ess);
 

@@ -4,15 +4,18 @@
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/ad_native.hpp"
+#include "src/ad_native2.hpp"
 
 using namespace std;
 using namespace mfem;
 
-MAKE_AD_FUNCTION(MyADFunction, T, VEC, MAT, x, dummy,
+struct MyADFunction : public ADFunction2
 {
-   return sin(x(0))*exp(x(1)) + pow(x(2), 3.0);
-});
+public:
+   MyADFunction(int n_input): ADFunction2(n_input) { }
+
+   AD_IMPL(T, V, M, x, return sin(x(0))*exp(x(1)) + pow(x(2), 3.0);)
+};
 
 void jacobian(const Vector &x, Vector &J)
 {
@@ -42,20 +45,23 @@ void hessian(const Vector &x, DenseMatrix &H)
 
 int main(int argc, char *argv[])
 {
-   MyADFunction f(3, 0);
+   MyADFunction f(3);
 
    Vector x({0.5, 1.0, -1.0});
-   Vector param({});
+   Mesh mesh = Mesh::MakeCartesian1D(1);
+   // Dummies
+   ElementTransformation &Tr = *mesh.GetElementTransformation(0);
+   const IntegrationPoint &ip = IntRules.Get(Tr.GetGeometryType(), 0).IntPoint(0);
 
    Vector jac, jac_ref;
-   f.Gradient(x, param, jac);
+   f.Gradient(x, Tr, ip, jac);
    jacobian(x, jac_ref);
 
    DenseMatrix hess, hess_ref;
-   f.Hessian(x, param, hess);
+   f.Hessian(x, Tr, ip, hess);
    hessian(x, hess_ref);
 
-   out << "Value : " << f(x, param) << std::endl;
+   out << "Value : " << f(x, Tr, ip) << std::endl;
 
    out << "Jacobian  : ";
    for (auto & j : jac) { out << j << " "; }
