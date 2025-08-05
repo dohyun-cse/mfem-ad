@@ -1,4 +1,4 @@
-/// Example 5: AD Obstacle Problem with PG
+/// Example 4: AD Obstacle Problem with PG
 #include "mfem.hpp"
 #include <fstream>
 #include <iostream>

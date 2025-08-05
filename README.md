@@ -1,6 +1,6 @@
-# LVPP Test
+# AD LVPP Test
 
-LVPP Test is a test project for the LVPP method.
+LVPP Test is a test project for the LVPP method using AD.
 
     
 ## MFEM binding

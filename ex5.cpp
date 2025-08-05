@@ -1,4 +1,9 @@
-/// Example 5: AD Obstacle Problem with PG
+/// Remap objectives
+///
+/// TODO:
+/// It is very tidius to manage artifacts when adding/subtracting...
+/// There must be a better design :(
+/// See, MakeConstraints and operators in ADFunction.
 #include "mfem.hpp"
 #include <fstream>
 #include <iostream>
