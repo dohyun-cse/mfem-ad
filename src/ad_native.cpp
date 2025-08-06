@@ -7,13 +7,17 @@ void ADFunction::Gradient(const Vector &x, ElementTransformation &Tr,
                            const IntegrationPoint &ip,
                            Vector &J) const
 {
+   ProcessParameters(Tr, ip);
+   Gradient(x, J);
+}
+void ADFunction::Gradient(const Vector &x, Vector &J) const
+{
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::Gradient: x.Size() must match n_input");
    MFEM_ASSERT(param.Size() == n_param,
                "ADFunction::Gradient: param.Size() must match n_param");
    J.SetSize(x.Size());
    ADVector x_ad(x);
-   ProcessParameters(Tr, ip);
    for (int i=0; i < x.Size(); i++)
    {
       x_ad[i].gradient = 1.0;
@@ -27,13 +31,18 @@ void ADFunction::Hessian(const Vector &x, ElementTransformation &Tr,
                           const IntegrationPoint &ip,
                           DenseMatrix &H) const
 {
+   ProcessParameters(Tr, ip);
+   Hessian(x, H);
+}
+
+void ADFunction::Hessian(const Vector &x, DenseMatrix &H) const
+{
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::Hessian: x.Size() must match n_input");
    MFEM_ASSERT(param.Size() == n_param,
                "ADFunction::Hessian: param.Size() must match n_param");
    H.SetSize(x.Size(), x.Size());
    AD2Vector x_ad(x);
-   ProcessParameters(Tr, ip);
    for (int i=0; i<x.Size(); i++) // Loop for the first derivative
    {
       x_ad[i].value.gradient = 1.0;
@@ -48,6 +57,7 @@ void ADFunction::Hessian(const Vector &x, ElementTransformation &Tr,
       x_ad[i].value.gradient = 0.0;
    }
 }
+
 real_t ADPGEnergy::operator()(const Vector &x) const
 {
    // variables

@@ -48,20 +48,16 @@ int main(int argc, char *argv[])
    MyADFunction f(3);
 
    Vector x({0.5, 1.0, -1.0});
-   Mesh mesh = Mesh::MakeCartesian1D(1);
-   // Dummies
-   ElementTransformation &Tr = *mesh.GetElementTransformation(0);
-   const IntegrationPoint &ip = IntRules.Get(Tr.GetGeometryType(), 0).IntPoint(0);
 
    Vector jac, jac_ref;
-   f.Gradient(x, Tr, ip, jac);
+   f.Gradient(x, jac);
    jacobian(x, jac_ref);
 
    DenseMatrix hess, hess_ref;
-   f.Hessian(x, Tr, ip, hess);
+   f.Hessian(x, hess);
    hessian(x, hess_ref);
 
-   out << "Value : " << f(x, Tr, ip) << std::endl;
+   out << "Value : " << f(x) << std::endl;
 
    out << "Jacobian  : ";
    for (auto & j : jac) { out << j << " "; }

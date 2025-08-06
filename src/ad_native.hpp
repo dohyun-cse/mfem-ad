@@ -9,15 +9,15 @@ namespace mfem
 template <typename value_type, typename gradient_type, typename other_type>
 MFEM_HOST_DEVICE
 inline future::dual<value_type, gradient_type> max(
-   future::dual<value_type, gradient_type> a,
-   other_type b);
+   future::dual<value_type, gradient_type> a, other_type b);
+
 inline real_t max(const real_t a, const real_t b) { return std::max(a,b); }
 
 template <typename value_type, typename gradient_type, typename other_type>
 MFEM_HOST_DEVICE
 inline future::dual<value_type, gradient_type> min(
-   future::dual<value_type, gradient_type> a,
-   other_type b);
+   future::dual<value_type, gradient_type> a, other_type b);
+
 MFEM_HOST_DEVICE
 inline real_t min(const real_t a, const real_t b) { return std::min(a,b); }
 
@@ -69,11 +69,13 @@ public:
    // Evaluate the gradient, using forward mode autodiff
    virtual void Gradient(const Vector &x, ElementTransformation &Tr,
                          const IntegrationPoint &ip, Vector &J) const;
+   virtual void Gradient(const Vector &x, Vector &J) const;
    // Evaluate the Hessian, using forward over forward autodiff
    // The Hessian assumed to be symmetric.
    virtual void Hessian(const Vector &x, ElementTransformation &Tr,
                         const IntegrationPoint &ip,
                         DenseMatrix &H) const;
+   virtual void Hessian(const Vector &x, DenseMatrix &H) const;
 };
 // Macro to generate type-varying implementation for ADFunction.
 // See, DiffusionEnergy, ..., for example of usage.
@@ -344,7 +346,7 @@ struct DiffEnergy : public ADFunction
    AD_IMPL(T, V, M, x,
    {
       V diff(x);
-      diff -= other_v;
+      for (int i=0; i<n_input; i++) { diff[i] -= other_v[i]; }
       return energy(diff);
    });
 
@@ -708,9 +710,8 @@ struct ShiftedADFunction : public ADFunction
    const std::shared_ptr<ADFunction> f1;
    real_t b; // scaling factor for f2
 
-   ShiftedADFunction(const std::shared_ptr<ADFunction> &f1,
-                     const std::shared_ptr<ADFunction> &f2, real_t b)
-      : ADFunction(0), f1(f1)
+   ShiftedADFunction(const std::shared_ptr<ADFunction> &f1, real_t b)
+      : ADFunction(0), f1(f1), b(b)
    {
       MFEM_ASSERT(f1.get() != nullptr,
                   "ProductADFunction: f1 must not be null");
@@ -837,15 +838,12 @@ struct ReferenceConstantADFunction : public ADFunction
    AD2Real_t operator()(const AD2Vector &x) const override
    { return AD2Real_t{a, 0.0}; }
 
-   void Gradient(const Vector &x, ElementTransformation &Tr,
-                 const IntegrationPoint &ip, Vector &J) const override
+   void Gradient(const Vector &x, Vector &J) const override
    {
       J.SetSize(x.Size());
       J = 0.0; // Gradient is zero for constant function
    }
-   void Hessian(const Vector &x, ElementTransformation &Tr,
-                const IntegrationPoint &ip,
-                DenseMatrix &H) const override
+   void Hessian(const Vector &x, DenseMatrix &H) const override
    {
       H.SetSize(x.Size(), x.Size());
       H = 0.0; // Hessian is zero for constant function
