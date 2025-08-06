@@ -23,13 +23,15 @@ void _constexpr_for(F func, std::index_sequence<Is...>)
 // constexpr auto mode = ADEval::VALUE | ADEval::GRAD;
 enum class ADEval
 {
-   NONE = 0, // nothing (defualt)
-   VALUE  = 1 << 1, // u(T, ip) is needed
-   GRAD   = 1 << 2, // grad u(T, ip) is needed
-   // Hessian = 1 << 3 // In future, we may want to support Hessian evaluation.
+   QVALUE  = 1 << 0, // u(T, ip) (quadrature value)
+   VALUE   = 1 << 1, // u(T, ip)
+   GRAD    = 1 << 2, // grad u(T, ip)
+   DIV     = 1 << 3, // div u(T, ip) (not yet implemented)
+   CURL    = 1 << 4, // curl u(T, ip) (not yet implemented)
+   Hessian = 1 << 5, // D^2 u(T, ip) (not yet implemented)
 
-   VECTOR = 1 << 4, // vector-valued function
-
+   VECTOR  = 1 << 6, // vector-valued scalar FE
+   VECFE   = 1 << 7, // vector-valued vector FE (not yet implemented)
 };
 
 constexpr ADEval operator|(ADEval a, ADEval b)
@@ -40,9 +42,29 @@ constexpr ADEval operator&(ADEval a, ADEval b)
 {
    return static_cast<ADEval>(static_cast<int>(a) & static_cast<int>(b));
 }
+inline constexpr ADEval operator~(ADEval mode)
+{
+   return static_cast<ADEval>(~static_cast<int>(mode));
+}
 inline constexpr bool hasFlag(ADEval mode, ADEval flag)
 {
    return (mode & flag) == flag;
+}
+
+template <ADEval mode>
+constexpr bool isValidADEval()
+{
+   constexpr auto INVALID = ADEval::DIV
+                            | ADEval::CURL
+                            | ADEval::Hessian
+                            | ADEval::VECFE;
+   if constexpr (static_cast<int>(mode & INVALID) != 0) { return false; }
+   if constexpr (hasFlag(mode, ADEval::QVALUE))
+   {
+      // QVALUE cannot be combined with other modes except VECTOR
+      return static_cast<int>(mode & (~(ADEval::QVALUE | ADEval::VECTOR))) == 0;
+   }
+   return true;
 }
 
 template <ADEval... modes>
@@ -51,6 +73,8 @@ class ADBlockNonlinearFormIntegrator;
 template <ADEval mode>
 class ADNonlinearFormIntegrator : public NonlinearFormIntegrator
 {
+   static_assert(isValidADEval<mode>(),
+              "ADNonlinearFormIntegrator: Invalid ADEval mode");
 protected:
    ADFunction &f;
 
@@ -130,6 +154,7 @@ protected:
    inline static void CalcInputShapes(const FiniteElement &el,
                                       ElementTransformation &Tr,
                                       const IntegrationPoint &ip,
+                                      DenseMatrix &shapes,
                                       Vector &value_shapes,
                                       DenseMatrix &grad_shapes);
    template <ADEval... modes>
@@ -307,6 +332,7 @@ protected:
       const Array<const FiniteElement *>& el,
       ElementTransformation &Tr,
       const IntegrationPoint &ip,
+      std::vector<DenseMatrix> &allshapes,
       std::vector<Vector> &value_shapes,
       std::vector<DenseMatrix> &grad_shapes);
 

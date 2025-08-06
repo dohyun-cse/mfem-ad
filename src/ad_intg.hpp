@@ -19,14 +19,15 @@ inline int ADNonlinearFormIntegrator<mode>::InitInputShapes(
    const int dof = el.GetDof();
    shapes.SetSize(dof, shapedim);
 
-   if constexpr (hasFlag(mode, ADEval::VALUE))
-   {
-      shapes.GetColumnReference(0, value_shapes);
-   }
+   if constexpr (hasFlag(mode, ADEval::QVALUE)) { shapes.SetCol(0, 0.0); }
+
+   if constexpr (hasFlag(mode, ADEval::VALUE)) { shapes.GetColumnReference(hasFlag(mode, ADEval::QVALUE), value_shapes); }
+
    if constexpr (hasFlag(mode, ADEval::GRAD))
    {
       grad_shapes.UseExternalData(shapes.GetData()
-                                  + dof*(hasFlag(mode, ADEval::VALUE)),
+                                  + dof*hasFlag(mode, ADEval::QVALUE)
+                                  + dof*hasFlag(mode, ADEval::VALUE),
                                   dof, sdim);
    }
    return shapedim;
@@ -37,9 +38,11 @@ inline void ADNonlinearFormIntegrator<mode>::CalcInputShapes(
    const FiniteElement &el,
    ElementTransformation &Tr,
    const IntegrationPoint &ip,
+   DenseMatrix &allshapes,
    Vector &value_shapes,
    DenseMatrix &grad_shapes)
 {
+   if constexpr (hasFlag(mode, ADEval::QVALUE)) { allshapes.SetCol(0, 0.0); allshapes(ip.index, 0) = 1.0; }
    // Get value shape
    if constexpr (hasFlag(mode, ADEval::VALUE)) { el.CalcPhysShape(Tr, value_shapes); }
 
@@ -77,7 +80,7 @@ real_t ADNonlinearFormIntegrator<mode>::GetElementEnergy(
       const IntegrationPoint &ip = ir->IntPoint(i);
       Tr.SetIntPoint(&ip);
 
-      CalcInputShapes(el, Tr, ip, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
 
       if constexpr (hasFlag(mode, ADEval::VECTOR))
       {
@@ -130,7 +133,7 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
       Tr.SetIntPoint(&ip);
       w = ip.weight * Tr.Weight();
 
-      CalcInputShapes(el, Tr, ip, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
 
       // Convert dof to x = [[value, grad], [value, grad], ...]
       if constexpr (hasFlag(mode, ADEval::VECTOR)) { MultAtB(allshapes, elfun_matview, xmat); }
@@ -192,7 +195,7 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
       const IntegrationPoint &ip = ir->IntPoint(i);
       Tr.SetIntPoint(&ip);
       w = ip.weight * Tr.Weight();
-      CalcInputShapes(el, Tr, ip, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
 
       // Convert dof to x = [[value, grad], [value, grad], ...]
       if constexpr (hasFlag(mode, ADEval::VECTOR)) { MultAtB(allshapes, elfun_matview, xmat); }
@@ -295,11 +298,15 @@ ADBlockNonlinearFormIntegrator<modes...>::CalcInputShapes(
    const Array<const FiniteElement *>& el,
    ElementTransformation &Tr,
    const IntegrationPoint &ip,
+   std::vector<DenseMatrix> &allshapes,
    std::vector<Vector> &value_shapes,
    std::vector<DenseMatrix> &grad_shapes)
 {
    _constexpr_for([&](auto i)
    {
+      if constexpr (hasFlag(modes_arr[i], ADEval::QVALUE))
+      { allshapes[i].SetCol(0, 0.0); allshapes[i](ip.index, 0) = 1.0; }
+
       // Get value shape
       if constexpr (hasFlag(modes_arr[i], ADEval::VALUE))
       { el[i]->CalcPhysShape(Tr, value_shapes[i]); }
