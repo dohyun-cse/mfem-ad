@@ -17,11 +17,12 @@ add_library(core INTERFACE)
 set(LIB
   logger
   ad_native
+  pg
 )
 
 # if a library depends on other libraries, put them like this:
 # The dependent libraries should be defined before the library that depends on them
-# set(LIB_DEP_mylib dependent_lib1 dependent_lib2)
+set(LIB_DEP_pg ad_native)
 
 # put your executables (relative to ./) here.
 set(EXECUTABLES

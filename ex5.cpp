@@ -11,6 +11,7 @@
 #include "src/logger.hpp"
 #include "src/ad_intg.hpp"
 #include "src/tools.hpp"
+#include "src/pg.hpp"
 
 using namespace std;
 using namespace mfem;
@@ -20,11 +21,19 @@ struct VolumeFunctional : public ADFunction
    VolumeFunctional(int n_input) : ADFunction(n_input) {}
    AD_IMPL(T, V, M, x, return x[0];);
 };
+
 struct MassFunctional : public ADFunction
 {
    MassFunctional(int n_input) : ADFunction(n_input) {}
    AD_IMPL(T, V, M, x, return x[0]*x[1];);
 };
+
+struct InternalEnergyFunctional : public ADFunction
+{
+   InternalEnergyFunctional(int n_input) : ADFunction(n_input) {}
+   AD_IMPL(T, V, M, x, return x[0]*x[1]*x[2];);
+};
+
 struct TotalEnergyFunctional : public ADFunction
 {
    TotalEnergyFunctional(int n_input) : ADFunction(n_input) {}
@@ -41,6 +50,7 @@ struct TotalEnergyFunctional : public ADFunction
       return result;
    });
 };
+
 struct MomentumFunctional : public ADFunction
 {
    int comp;
@@ -48,103 +58,74 @@ struct MomentumFunctional : public ADFunction
    AD_IMPL(T, V, M, x, return x[0]*x[1]*x[3+comp];);
 };
 
-std::tuple<std::unique_ptr<ADFunction>, std::vector<std::unique_ptr<ADFunction>>>
-MakeConstraints(const Vector &target, Vector &lambda, real_t &mu, const int dim,
-                std::vector<std::unique_ptr<GridFunction>> &x_min,
-                std::vector<std::unique_ptr<GridFunction>> &x_max,
-                std::vector<std::unique_ptr<GridFunction>> &latent_k)
+template <int opt_type>
+struct RemapALFunctional : public ADFunction
 {
-   std::vector<std::unique_ptr<ADFunction>> temps;
+   int dim;
+   MassEnergy l2_energy;
+   DiffEnergy l2_diff_sqrd;
+   VolumeFunctional volume;
+   MassFunctional mass;
+   InternalEnergyFunctional internal_energy;
+   TotalEnergyFunctional total_energy;
+   MomentumFunctional momentum[3];
+   Vector con_target; // will be divided by domain volume as this is point-functional
+   const Vector &lambda;
+   const real_t &mu;
 
-   const int numVars = 3 + dim;
-   std::vector<std::unique_ptr<ADFunction>> const_list;
-   const_list.emplace_back(std::make_unique<VolumeFunctional>(numVars));
-   const_list.emplace_back(std::make_unique<MassFunctional>(numVars));
-   const_list.emplace_back(std::make_unique<TotalEnergyFunctional>(numVars));
-   for (int i=0; i<dim; i++)
+   RemapALFunctional(VectorCoefficient &x0, Vector &con_target,
+                     Vector &lambda, real_t &mu, real_t domain_volume)
+      : ADFunction(x0.GetVDim())
+      , dim(opt_type == 3 ? con_target.Size() - 3 :
+            -1) // dim is only necessary for opt_type == 3
+      , l2_energy(n_input)
+      , l2_diff_sqrd(l2_energy, x0)
+      , volume(n_input), mass(n_input)
+      , internal_energy(n_input)
+      , total_energy(n_input)
+      , momentum{ MomentumFunctional(n_input,0),
+                  MomentumFunctional(n_input,1),
+                  MomentumFunctional(n_input,2) }
+      , con_target(con_target)
+      , lambda(lambda)
+      , mu(mu)
+   { con_target *= 1.0 / domain_volume; }
+
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
    {
-      const_list.emplace_back(std::make_unique<MomentumFunctional>(numVars, i));
+      l2_diff_sqrd.ProcessParameters(Tr, ip);
+      /* Constraints don't need to process parameters
+      volume.ProcessParameters(Tr, ip);
+      mass.ProcessParameters(Tr, ip);
+      internal_energy.ProcessParameters(Tr, ip);
+      total_energy.ProcessParameters(Tr, ip);
+      for (int i=0; i<dim; i++) { momentum[i].ProcessParameters(Tr, ip); }
+      */
    }
-   std::vector<std::unique_ptr<ShiftedADFunction>> constraints(numVars);
-   for (int i=0; i<numVars; i++)
+
+   // Evaluate lambda*c(x) + (mu/2)*c(x)^2
+   template <typename T, typename V>
+   T evalAL(const ADFunction &c, V &x, int idx) const
    {
-      constraints[i] = std::make_unique<ShiftedADFunction>(*const_list[i],
-                       - target[i]);
+      T cx = c(x) - con_target[idx];
+      return cx*(lambda[idx] + mu*0.5*cx);
    }
 
-   auto mu_ad = std::make_unique<ReferenceConstantADFunction>(mu, numVars);
-   auto half_mu_ad = std::make_unique<ScaledADFunction>(*mu_ad,0.5);
-
-   std::vector<std::unique_ptr<ReferenceConstantADFunction>> lambda_ref(numVars);
-   std::vector<std::unique_ptr<ProductADFunction>> lagrangians(numVars);
-   std::vector<std::unique_ptr<ProductADFunction>> sqrd_constraints(numVars);
-   std::vector<std::unique_ptr<ProductADFunction>> penalties(numVars);
-   for (int i=0; i<numVars; i++)
+   AD_IMPL(T, V, M, x,
    {
-      lambda_ref[i] = std::make_unique<ReferenceConstantADFunction>(lambda[i],
-                      numVars);
-      lagrangians[i] = std::make_unique<ProductADFunction>(*lambda_ref[i],
-                       *constraints[i]);
-      sqrd_constraints[i] = std::make_unique<ProductADFunction>(*constraints[i],
-                            *constraints[i]);
-      penalties[i] = std::make_unique<ProductADFunction>(*half_mu_ad,
-                     *sqrd_constraints[i]);
-   }
-
-   auto mass_energy = std::make_unique<MassEnergy>(numVars);
-   std::vector<std::unique_ptr<SumADFunction>> TotalLagrangian(numVars);
-   std::vector<std::unique_ptr<SumADFunction>> TotalAL(numVars);
-   for (int i=0; i<numVars; i++)
-   {
-      if (i == 0)
+      T result = l2_diff_sqrd(x); // (1/2)*||x-x0||^2
+      if constexpr (opt_type >= 0) { result += evalAL<T>(volume, x, 0); }
+      if constexpr (opt_type >= 1) { result += evalAL<T>(mass, x, 1); }
+      if constexpr (opt_type == 2) { result += evalAL<T>(internal_energy, x, 2); }
+      else if constexpr (opt_type > 2) { result += evalAL<T>(total_energy, x, 2); }
+      if constexpr (opt_type == 3)
       {
-         TotalLagrangian[i] = std::make_unique<SumADFunction>(*mass_energy,
-                              *lagrangians[i]);
+         for (int i=0; i<dim; i++) { result += evalAL<T>(momentum[i], x, 3 + i); }
       }
-      else
-      {
-         TotalLagrangian[i] = std::make_unique<SumADFunction>(*TotalAL[i-1],
-                              *lagrangians[i]);
-      }
-      TotalAL[i] = std::make_unique<SumADFunction>(*TotalLagrangian[i],
-                   *penalties[i]);
-   }
-   std::vector<std::unique_ptr<FermiDiracEntropy>> entropy_list(numVars);
-   std::vector<std::unique_ptr<ADPGEnergy>> PGAL_energy_list(numVars);
-   for (int i=0; i<numVars; i++)
-   {
-      entropy_list[i] = std::make_unique<FermiDiracEntropy>(*x_min[i], *x_max[i]);
-      if (i == 0)
-      {
-         PGAL_energy_list[i] = std::make_unique<ADPGEnergy>(ADPGEnergy(
-                                  *TotalAL[numVars-1], *entropy_list[i], *latent_k[i], i));
-      }
-      else
-      {
-         PGAL_energy_list[i] = std::make_unique<ADPGEnergy>(*PGAL_energy_list[i-1],
-                               *entropy_list[i], *latent_k[i], i);
-      }
-   }
-   for (auto &c : const_list) { temps.push_back(std::move(c)); }
-   for (auto &c : constraints) { temps.push_back(std::move(c)); }
-   temps.push_back(std::move(mu_ad));
-   temps.push_back(std::move(half_mu_ad));
-   for (auto &l : lambda_ref) { temps.push_back(std::move(l)); }
-   for (auto &l : lagrangians) { temps.push_back(std::move(l)); }
-   for (auto &p : sqrd_constraints) { temps.push_back(std::move(p)); }
-   for (auto &p : penalties) { temps.push_back(std::move(p)); }
-   temps.push_back(std::move(mass_energy));
-   for (auto &L : TotalLagrangian) { temps.push_back(std::move(L)); }
-   for (auto &AL : TotalAL) { temps.push_back(std::move(AL)); }
-   for (auto &e : entropy_list) { temps.push_back(std::move(e)); }
-   for (auto &p : PGAL_energy_list) { temps.push_back(std::move(p)); }
-
-   std::unique_ptr<ADFunction> final_func = std::move(temps.back());
-   temps.pop_back();
-
-   return {std::move(final_func), std::move(temps)};
-}
-
+      return result;
+   });
+};
 
 int main(int argc, char *argv[])
 {
@@ -181,6 +162,8 @@ int main(int argc, char *argv[])
       ser_mesh.UniformRefinement();
    }
    ParMesh mesh(MPI_COMM_WORLD, ser_mesh);
+   real_t domain_volume = 0.0;
+   for (int i=0; i<mesh.GetNE(); i++) { domain_volume += mesh.GetElementVolume(i); }
 
    L2_FECollection l2_fec(order, dim);
    H1_FECollection h1_fec(order, dim);
@@ -195,35 +178,54 @@ int main(int argc, char *argv[])
    Array<ParFiniteElementSpace*> fespaces{&qf_fes, &qf_fes, &l2_fes, &h1_fes, &h1_fes};
    const int numVars = fespaces.Size();
 
-   std::vector<std::unique_ptr<GridFunction>> x;
-   std::vector<std::unique_ptr<GridFunction>> x_min;
-   std::vector<std::unique_ptr<GridFunction>> x_max;
-   std::vector<std::unique_ptr<GridFunction>> latent_k;
-   for (auto *fes : fespaces)
+   VectorArrayCoefficient x0_cf(numVars);
+   std::vector<std::unique_ptr<GridFunction>> x(numVars);
+   std::vector<std::unique_ptr<GridFunction>> x0(numVars);
+   std::vector<std::unique_ptr<GridFunction>> x_min(numVars);
+   std::vector<std::unique_ptr<GridFunction>> x_max(numVars);
+   std::vector<std::unique_ptr<GridFunction>> latent_k(numVars);
+   std::vector<std::unique_ptr<FermiDiracEntropy>> dual_entropies(numVars);
+   for (int i=0; i<numVars; i++)
    {
-      x.emplace_back(std::make_unique<GridFunction>(fes));
-      x_min.emplace_back(std::make_unique<GridFunction>(fes));
-      x_max.emplace_back(std::make_unique<GridFunction>(fes));
-      latent_k.emplace_back(std::make_unique<GridFunction>(fes));
-      *x.back() = 0.0;
-      *x_min.back() = 0.0;
-      *x_max.back() = 1.0;
-      *latent_k.back() = 0.0;
+      auto fes = fespaces[i];
+      x[i] = std::make_unique<GridFunction>(fes);
+      *x[i] = 0.0; x[i]->SetTrueVector();
+      x0[i] = std::make_unique<GridFunction>(fes);
+      *x0[i] = 0.0; x0[i]->SetTrueVector();
+      x_min[i] = std::make_unique<GridFunction>(fes);
+      *x_min[i] = 0.0; x_min[i]->SetTrueVector();
+      x_max[i] = std::make_unique<GridFunction>(fes);
+      *x_max[i] = 1.0; x_max[i]->SetTrueVector();
+      latent_k[i] = std::make_unique<GridFunction>(fes);
+      *latent_k[i] = 0.0; latent_k[i]->SetTrueVector();
+
+      x0_cf.Set(i, new GridFunctionCoefficient(x0[i].get()), true);
+      dual_entropies[i] = std::make_unique<FermiDiracEntropy>(
+                             *x_min[i], *x_max[i]);
    }
-   Vector const_targets(numVars);
+   Vector constraints_rhs(numVars);
    Vector lambda(numVars);
-   real_t mu;
+   lambda = 0.0;
+   real_t mu(0);
+   Vector target(numVars);
+   target = 0.0;
+   target = 0.0;
+   // lambda and mu are passed by reference.
+   // Changing them outside will change teh functional, too.
+   RemapALFunctional<4> AL_functional(x0_cf, target, lambda, mu, domain_volume);
+   std::vector<std::unique_ptr<ADPGFunctional>> energies(numVars);
+   // Chain PG functionals
+   for (int i=0; i<numVars; i++)
+   {
+      if (i == 0) { energies[i] = std::make_unique<ADPGFunctional>(AL_functional, *dual_entropies[i], *latent_k[i]); }
+      else { energies[i] = std::make_unique<ADPGFunctional>(*energies[i-1], *dual_entropies[i], *latent_k[i]); }
+   }
 
-   auto obj_and_temp = MakeConstraints(const_targets, lambda, mu, dim, x_min,
-                                       x_max, latent_k);
-   ADFunction &pg_energy = *std::get<0>(obj_and_temp);
-
-   Vector xvec(pg_energy.n_input);
+   Vector xvec(AL_functional.n_input);
    xvec = 0.0;
-
    auto &Tr = *mesh.GetElementTransformation(0);
    const IntegrationPoint &ip = IntRules.Get(Tr.GetGeometryType(), 0).IntPoint(0);
-   pg_energy(xvec, Tr, ip);
+   AL_functional(xvec, Tr, ip);
 
    return 0;
 }

@@ -362,7 +362,7 @@ real_t ADBlockNonlinearFormIntegrator<modes...>::GetElementEnergy(
       const IntegrationPoint &ip = ir->IntPoint(i);
       Tr.SetIntPoint(&ip);
 
-      CalcInputShapes(el, Tr, ip, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
 
       _constexpr_for([&](auto vi)
       {
@@ -439,7 +439,7 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementVector(
       Tr.SetIntPoint(&ip);
       w = Tr.Weight()*ip.weight;
 
-      CalcInputShapes(el, Tr, ip, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
 
       _constexpr_for([&](auto vi)
       {
@@ -532,7 +532,7 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementGrad(
       Tr.SetIntPoint(&ip);
       w = Tr.Weight()*ip.weight;
 
-      CalcInputShapes(el, Tr, ip, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
 
       _constexpr_for([&](auto vi)
       {

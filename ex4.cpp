@@ -6,6 +6,7 @@
 #include "src/logger.hpp"
 #include "src/ad_intg.hpp"
 #include "src/tools.hpp"
+#include "src/pg.hpp"
 
 using namespace std;
 using namespace mfem;
@@ -26,6 +27,7 @@ struct ObstacleEnergy : public ADFunction
    });
 };
 
+
 int main(int argc, char *argv[])
 {
    Mpi::Init();
@@ -36,6 +38,11 @@ int main(int argc, char *argv[])
    // file name to be saved
    std::stringstream filename;
    filename << "ad-diffusion";
+   int rule_type = PGStepSizeRule::RuleType::CONSTANT;
+   real_t max_alpha = 1e04;
+   real_t alpha0 = 1.0;
+   real_t ratio = 1.0;
+   real_t ratio2 = 1.0;
 
    int order = 2;
    int ref_levels = 3;
@@ -46,6 +53,16 @@ int main(int argc, char *argv[])
    args.AddOption(&order, "-o", "--order",
                   "Finite element polynomial degree");
    args.AddOption(&ref_levels, "-r", "--ref", "Refinement levels");
+   args.AddOption(&rule_type, "-rule", "--rule",
+                  "Step size rule type: 0=CONSTANT, 1=POLY, 2=EXP, 3=DOUBLE_EXP");
+   args.AddOption(&max_alpha, "-ma", "--max-alpha",
+                  "Maximum step size for PG method");
+   args.AddOption(&alpha0, "-a0", "--alpha0",
+                  "Initial step size for PG method");
+   args.AddOption(&ratio, "-ar", "--alpha-ratio",
+                  "Ratio for step size rule (POLY, EXP, DOUBLE_EXP)");
+   args.AddOption(&ratio2, "-ar2", "--alpha-ratio2",
+                  "Second ratio for DOUBLE_EXP step size rule");
    args.AddOption(&visualization, "-vis", "--visualization",
                   "-no-vis", "--no-visualization",
                   "Enable visualization, default is false");
@@ -54,6 +71,8 @@ int main(int argc, char *argv[])
                   "Enable Paraview Export. Default is false");
    args.ParseCheck();
    if (myid != 0) { out.Disable(); }
+
+   PGStepSizeRule alpha_rule(rule_type, alpha0, max_alpha, ratio, ratio2);
 
    // Mesh mesh = rhs_fun_circle
    Mesh ser_mesh = Mesh::MakeCartesian2D(10, 10,
@@ -98,6 +117,7 @@ int main(int argc, char *argv[])
    QuadratureFunction x_mapped(&visspace);
    MappedGridFunctionCoefficient x_mapped_cf(&psi, [](const real_t x) { return std::exp(x); });
    ParGridFunction psik(psi);
+   GridFunctionCoefficient psik_cf(&psik);
 
    x.MakeTRef(&h1_fes, x_and_psi.GetBlock(0).GetData());
    x = 0.0; x.SetTrueVector();
@@ -107,7 +127,11 @@ int main(int argc, char *argv[])
    ConstantCoefficient lower_bound(0.0);
    ConstantCoefficient upper_bound(0.5);
    FermiDiracEntropy entropy(lower_bound, upper_bound);
-   ADPGEnergy pg_energy(obj_energy, entropy, psik);
+   ADPGFunctional pg_energy(obj_energy, entropy, psik);
+
+   ConstantCoefficient zero_cf(0.0);
+   ParGridFunction lambda(psi), lambda_prev(psi);
+   GridFunctionCoefficient lambda_prev_cf(&lambda_prev);
 
    Array<ParFiniteElementSpace*> fespaces{&h1_fes, &l2_fes};
    ParBlockNonlinearForm bnlf(fespaces);
@@ -135,10 +159,10 @@ int main(int argc, char *argv[])
    solver.SetSolver(lin_solver);
    solver.SetOperator(bnlf);
    IterativeSolver::PrintLevel print_level;
-   print_level.iterations = true;
    solver.SetPrintLevel(print_level);
    solver.SetAbsTol(1e-09);
    solver.SetRelTol(0.0);
+   solver.SetMaxIter(20);
    solver.iterative_mode = true;
 
    GLVis glvis("localhost", 19916, 400, 350, 2);
@@ -146,30 +170,44 @@ int main(int argc, char *argv[])
    // glvis.Append(x_mapped, "U(psi)", "Rjclmm");
    glvis.Update();
 
+   real_t lambda_diff = infinity();
    for (int i=0; i<100; i++)
    {
-      out << "PG iteration " << i + 1 << std::endl;
-      pg_energy.SetAlpha(1.0);
+      real_t alpha = alpha_rule.Get(i);
+      out << "PG iteration " << i + 1 << " with alpha=" << alpha << std::endl;
+      pg_energy.SetAlpha(alpha);
       psik = psi;
       psik.SetTrueVector();
       solver.Mult(rhs, x_and_psi);
-      if (solver.GetNumIterations() == 0)
+      if (!solver.GetConverged())
       {
-         out << "  Newton Converged without iterations. Terminating." << std::endl;
+         out << "Newton Failed to converge in " << solver.GetNumIterations() <<
+             std::endl;
+         break;
+      }
+
+      x.SetFromTrueVector();
+      psi.SetFromTrueVector();
+      subtract(psi, psik, lambda);
+      lambda *= 1.0 / pg_energy.GetAlpha();
+      if (i > 0) { lambda_diff = lambda.ComputeL1Error(lambda_prev_cf); }
+      lambda_prev = lambda;
+
+      x_mapped_cf.Project(x_mapped);
+      glvis.Update();
+      if (lambda_diff < 1e-10)
+      {
+         out << "  The dual variable, (psi - psi_k)/alpha, converged" << std::endl;
          out << "PG Converged in " << i + 1
-             << " with final residual: " << solver.GetFinalNorm() << std::endl;
+             << " with final Lambda difference: " << lambda_diff << std::endl;
          break;
       }
       else
       {
          out << "  Newton converged in " << solver.GetNumIterations()
              << " with residual " << solver.GetFinalNorm() << std::endl;
+         out << "  Lambda difference: " << lambda_diff << std::endl;
       }
-      x.SetFromTrueVector();
-      psi.SetFromTrueVector();
-      x_mapped_cf.Project(x_mapped);
-      glvis.Update();
    }
-
    return 0;
 }
