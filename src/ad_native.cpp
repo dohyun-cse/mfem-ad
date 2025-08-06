@@ -48,24 +48,7 @@ void ADFunction::Hessian(const Vector &x, ElementTransformation &Tr,
       x_ad[i].value.gradient = 0.0;
    }
 }
-SumADFunction ADFunction::operator+(const ADFunction& g) const
-{ return SumADFunction(*this, g); }
-ShiftedADFunction ADFunction::operator+(real_t a) const
-{ return ShiftedADFunction(*this, a); }
-ShiftedADFunction ADFunction::operator-(real_t a) const
-{ return ShiftedADFunction(*this, -a); }
-
-SumADFunction ADFunction::Add(const ADFunction&g, real_t a) const
-{
-   if (a == 1.0) { return (*this) + g; }
-   else { return SumADFunction(*this, g, 1.0, a); }
-}
-ProductADFunction ADFunction::operator*(const ADFunction& g) const
-{ return ProductADFunction(*this, g); }
-ScaledADFunction ADFunction::operator*(real_t a) const
-{ return ScaledADFunction(*this, a); }
-
-real_t ADPGEnergy::Eval(const Vector &x) const
+real_t ADPGEnergy::operator()(const Vector &x) const
 {
    // variables
    const Vector x1(x.GetData(), f.n_input);
@@ -77,8 +60,8 @@ real_t ADPGEnergy::Eval(const Vector &x) const
    {
       cross_entropy += x1[primal_begin + i]*(latent[i] - latent_k[i]);
    }
-   f.Eval(x1);
-   return f.Eval(x1) + (1.0 / alpha)*(cross_entropy - dual_entropy.Eval(latent));
+   f(x1);
+   return f(x1) + (1.0 / alpha)*(cross_entropy - dual_entropy(latent));
 }
 
 // default Jacobian evaluator
