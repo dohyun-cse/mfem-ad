@@ -106,7 +106,8 @@ struct ADPGFunctional : public ADFunction
       for (int i=0; i<dual_entropy.size(); i++)
       {
          dual_entropy_size += dual_entropy[i]->n_input;
-         max_primal_index = std::max(max_primal_index, primal_begin[i] + dual_entropy[i]->n_input);
+         max_primal_index = std::max(max_primal_index,
+                                     primal_begin[i] + dual_entropy[i]->n_input);
       }
       n_input += dual_entropy_size;
       MFEM_VERIFY(f.n_input >= max_primal_index,
@@ -180,10 +181,10 @@ struct ADPGFunctional : public ADFunction
    void ProcessParameters(ElementTransformation &Tr,
                           const IntegrationPoint &ip) const override
    {
-      MFEM_ASSERT(latent_k_cf != nullptr,
-                  "ADPGFunctional: latent_k_cf is not set. Use SetPrevLatent() to set it.");
       for (int i=0; i<latent_k.size(); i++)
       {
+         MFEM_ASSERT(latent_k_gf[i] != nullptr,
+                     "ADPGFunctional: latent_k_cf is not set. Use SetPrevLatent() to set it.");
          latent_k_gf[i]->GetVectorValue(Tr, ip, latent_k[i]);
          dual_entropy[i]->ProcessParameters(Tr, ip);
       }

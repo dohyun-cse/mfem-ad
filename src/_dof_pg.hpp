@@ -24,6 +24,7 @@ public:
    ADDofPGNonlinearFormIntegrator(ADPGFunctional &f,
                                   const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator<modes...>(f.GetObjective(), ir)
+      , pg_functional(f)
       , entropies(f.GetEntropies())
    {}
 
@@ -31,12 +32,14 @@ public:
                                   std::initializer_list<int> vdim,
                                   const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator<modes...>(f.GetObjective(), vdim, ir)
+      , pg_functional(f)
       , entropies(f.GetEntropies())
    {}
 
    ADDofPGNonlinearFormIntegrator(ADPGFunctional &f, const Array<int> &vdim,
                                   const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator<modes...>(f.GetObjective(), vdim, ir)
+      , pg_functional(f)
       , entropies(f.GetEntropies())
    {}
 

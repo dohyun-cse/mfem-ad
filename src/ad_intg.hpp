@@ -69,7 +69,7 @@ inline void ADNonlinearFormIntegrator<mode>::CalcInputShapes(
    // Get value shape
    if constexpr (hasFlag(mode, ADEval::VALUE))
    {
-      if constexpr (hasFlag(mode, ADEval::VECFE)) { el.CalcVShape(Tr, vshape); }
+      if constexpr (hasFlag(mode, ADEval::VECFE)) { el.CalcPhysVShape(Tr, vshape); }
       else { el.CalcPhysShape(Tr, shape); }
    }
 
@@ -303,13 +303,11 @@ void ADNonlinearFormIntegrator<mode>::AssembleFaceGrad(
 template <ADEval... modes>
 inline std::array<int, sizeof...(modes)>
                               ADBlockNonlinearFormIntegrator<modes...>::InitInputShapes(
-                                 const Array<const FiniteElement *>& el,
+                                 const Array<const FiniteElement *>& els,
                                  ElementTransformation &Tr,
-                                 std::vector<DenseMatrix> &shapes,
-                                 std::vector<Vector> &value_shapes,
-                                 std::vector<DenseMatrix> &grad_shapes)
+                                 std::vector<DenseMatrix> &shapes)
 {
-   MFEM_ASSERT(el.Size() == numSpaces,
+   MFEM_ASSERT(els.Size() == numSpaces,
                "ADBlockNonlinearFormIntegrator: "
                "el.Size() must match numSpaces");
    const int sdim = Tr.GetSpaceDim();
@@ -317,46 +315,93 @@ inline std::array<int, sizeof...(modes)>
 
    _constexpr_for([&](auto i)
    {
-      shapedims[i] = (hasFlag(modes_arr[i], ADEval::VALUE) ? 1 : 0)
-                     + (hasFlag(modes_arr[i], ADEval::GRAD) ? sdim : 0);
-      const int dof = el[i]->GetDof();
-      shapes[i].SetSize(dof, shapedims[i]);
+      constexpr auto mode = modes_arr[i];
+      const FiniteElement &el = *els[i];
+      const int sdim = Tr.GetSpaceDim();
+      const int dim = el.GetDim();
+      int idx[static_cast<int>(ADEval::NUMOPT)];
+      idx[0] = 0;
+      idx[1] = idx[0] + (hasFlag(modes_arr[i], ADEval::QVALUE) ? 1 : 0);
+      idx[2] = idx[1] +  (hasFlag(modes_arr[i], ADEval::VALUE)
+                          ? hasFlag(modes_arr[i], ADEval::VECFE)
+                          ? dim // if vector-FE
+                          : 1 // if scalar-FE
+                          : 0); // no value
+      idx[3] = idx[2] + (hasFlag(modes_arr[i], ADEval::GRAD) ? sdim : 0);
+      idx[4] = idx[3] + (hasFlag(modes_arr[i], ADEval::DIV) ? 1 : 0);
+      idx[5] = idx[4] + (hasFlag(modes_arr[i], ADEval::CURL) ? el.GetCurlDim() : 0);
+      const int shapedim = idx[5];
+      const int dof = el.GetDof();
+      shapes[i].SetSize(dof, shapedim);
 
-      if constexpr (hasFlag(modes_arr[i], ADEval::VALUE))
+      if constexpr (hasFlag(mode, ADEval::QVALUE)) { shapes[i].SetCol(idx[0], 0.0); }
+
+      if constexpr (hasFlag(mode, ADEval::VALUE))
       {
-         shapes[i].GetColumnReference(0, value_shapes[i]);
+         if constexpr (hasFlag(mode, ADEval::VECFE)) { vshape[i].UseExternalData(shapes[i].GetData() + dof*idx[1], dof, dim); }
+         else { shapes[i].GetColumnReference(idx[1], shape[i]); }
       }
-      if constexpr (hasFlag(modes_arr[i], ADEval::GRAD))
+
+      if constexpr (hasFlag(mode, ADEval::GRAD))
       {
-         grad_shapes[i].UseExternalData(shapes[i].GetData()
-                                        + dof*(hasFlag(modes_arr[i], ADEval::VALUE)),
-                                        dof, sdim);
+         gshape[i].UseExternalData(shapes[i].GetData() + dof*idx[2],
+                                   dof, sdim);
       }
+      if constexpr (hasFlag(mode, ADEval::DIV))
+      {
+         shapes[i].GetColumnReference(idx[3], divshape[i]);
+      }
+
+      if constexpr (hasFlag(mode, ADEval::CURL))
+      {
+         curlshape[i].UseExternalData(shapes[i].GetData() + dof*idx[4],
+                                      dof, el.GetCurlDim());
+      }
+      shapedims[i] = shapedim;
    }, std::make_index_sequence<sizeof...(modes)> {});
    return shapedims;
 }
 template <ADEval... modes>
 inline void
 ADBlockNonlinearFormIntegrator<modes...>::CalcInputShapes(
-   const Array<const FiniteElement *>& el,
+   const Array<const FiniteElement *>& els,
    ElementTransformation &Tr,
    const IntegrationPoint &ip,
-   std::vector<DenseMatrix> &allshapes,
-   std::vector<Vector> &value_shapes,
-   std::vector<DenseMatrix> &grad_shapes)
+   std::vector<DenseMatrix> &allshapes)
 {
    _constexpr_for([&](auto i)
    {
-      if constexpr (hasFlag(modes_arr[i], ADEval::QVALUE))
-      { allshapes[i].SetCol(0, 0.0); allshapes[i](ip.index, 0) = 1.0; }
+      const auto&el = *els[i];
+      constexpr auto mode = modes_arr[i];
+      // Get quadrature value
+      // ip should be from the same integration rule with base quadrature
+      if constexpr (hasFlag(mode, ADEval::QVALUE)) { allshapes[i].SetCol(0, 0.0); allshapes[i](ip.index, 0) = 1.0; }
 
       // Get value shape
-      if constexpr (hasFlag(modes_arr[i], ADEval::VALUE))
-      { el[i]->CalcPhysShape(Tr, value_shapes[i]); }
+      if constexpr (hasFlag(mode, ADEval::VALUE))
+      {
+         if constexpr (hasFlag(mode, ADEval::VECFE)) { el.CalcPhysVShape(Tr, vshape[i]); }
+         else { el.CalcPhysShape(Tr, shape[i]); }
+      }
 
       // Get gradient shape
-      if constexpr (hasFlag(modes_arr[i], ADEval::GRAD))
-      { el[i]->CalcPhysDShape(Tr, grad_shapes[i]); }
+      if constexpr (hasFlag(mode, ADEval::GRAD)) { el[i].CalcPhysDShape(Tr, gshape[i]); }
+
+      // Get divergence shape
+      if constexpr (hasFlag(mode, ADEval::DIV))
+      {
+         if constexpr (hasFlag(mode, ADEval::GRAD))
+         {
+            gshape[i].GetRowSums(divshape[i]);
+         }
+         else
+         {
+            el.CalcPhysDivShape(Tr, divshape[i]);
+         }
+      }
+
+      // Get divergence shape
+      if constexpr (hasFlag(mode, ADEval::CURL)) { el.CalcPhysCurlShape(Tr, curlshape[i]); }
    }, std::make_index_sequence<sizeof...(modes)> {});
 }
 
@@ -383,8 +428,7 @@ real_t ADBlockNonlinearFormIntegrator<modes...>::GetElementEnergy(
 
    real_t energy = 0.0;
 
-   std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes, shape,
-                                       dshape));
+   std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes));
    x.SetSize(f.n_input);
    int x_idx = 0;
    _constexpr_for([&](auto vi)
@@ -405,7 +449,7 @@ real_t ADBlockNonlinearFormIntegrator<modes...>::GetElementEnergy(
       const IntegrationPoint &ip = ir->IntPoint(i);
       Tr.SetIntPoint(&ip);
 
-      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes);
 
       _constexpr_for([&](auto vi)
       {
@@ -450,8 +494,7 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementVector(
       *elvect[i] = 0.0;
    }
 
-   std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes, shape,
-                                       dshape));
+   std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes));
    Array<int> x_idx(numSpaces+1);
    x_idx[0] = 0;
    for (int i=0; i<numSpaces; i++)
@@ -482,7 +525,7 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementVector(
       Tr.SetIntPoint(&ip);
       w = Tr.Weight()*ip.weight;
 
-      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes);
 
       _constexpr_for([&](auto vi)
       {
@@ -542,8 +585,7 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementGrad(
       }
    }
 
-   std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes, shape,
-                                       dshape));
+   std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes));
    Array<int> x_idx(numSpaces+1), H_idx(numSpaces+1);
    x_idx[0] = 0;
    H_idx[0] = 0;
@@ -575,7 +617,7 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementGrad(
       Tr.SetIntPoint(&ip);
       w = Tr.Weight()*ip.weight;
 
-      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes);
 
       _constexpr_for([&](auto vi)
       {

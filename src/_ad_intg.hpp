@@ -198,7 +198,9 @@ private:
    std::vector<DenseMatrix> allshapes; // all shapes, [?shape, ?dshape]
    std::vector<Vector> shape, shape1, shape2;
    std::vector<DenseMatrix> vshape, vshape1, vshape2;
-   std::vector<DenseMatrix> dshape, gshape1, gshape2;
+   std::vector<DenseMatrix> gshape, gshape1, gshape2;
+   std::vector<Vector> divshape, divshape1, divshape2;
+   std::vector<DenseMatrix> curlshape, curlgshape1, curlgshape2;
    Vector nor;
    // DenseMatrix d2shape, d2shape1, d2shape2; // for hessian. Not implemented yet.
 public:
@@ -214,7 +216,9 @@ public:
       , partelmat(numSpaces)
       , shape(numSpaces), shape1(numSpaces), shape2(numSpaces)
       , vshape(numSpaces), vshape1(numSpaces), vshape2(numSpaces)
-      , dshape(numSpaces), gshape1(numSpaces), gshape2(numSpaces)
+      , gshape(numSpaces), gshape1(numSpaces), gshape2(numSpaces)
+      , divshape(numSpaces), divshape1(numSpaces), divshape2(numSpaces)
+      , curlshape(numSpaces), curlgshape1(numSpaces), curlgshape2(numSpaces)
    { vdim = 1; }
 
    ADBlockNonlinearFormIntegrator(ADFunction &f, std::initializer_list<int> vdim,
@@ -317,20 +321,16 @@ protected:
       return &IntRules.Get(trans.GetGeometryType(), order*2 + 2);
    }
 
-   static std::array<int, sizeof...(modes)> InitInputShapes(
+   std::array<int, sizeof...(modes)> InitInputShapes(
                                     const Array<const FiniteElement *>& el,
                                     ElementTransformation &Tr,
-                                    std::vector<DenseMatrix> &shapes,
-                                    std::vector<Vector> &value_shapes,
-                                    std::vector<DenseMatrix> &grad_shapes);
+                                    std::vector<DenseMatrix> &shapes);
 
-   static void CalcInputShapes(
+   void CalcInputShapes(
       const Array<const FiniteElement *>& el,
       ElementTransformation &Tr,
       const IntegrationPoint &ip,
-      std::vector<DenseMatrix> &allshapes,
-      std::vector<Vector> &value_shapes,
-      std::vector<DenseMatrix> &grad_shapes);
+      std::vector<DenseMatrix> &allshapes);
 
 private:
 };

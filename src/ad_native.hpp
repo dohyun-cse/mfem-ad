@@ -212,8 +212,6 @@ protected:
    {                                                                                   \
       MFEM_ASSERT(var.Size() == n_input,                                               \
                  "ADFunction::operator(): var.Size() must match n_input")              \
-      MFEM_ASSERT(param.Size() == n_param,                                             \
-                 "ADFunction::operator(): var.Size() must match n_input")              \
       using SCALAR = real_t;                                                           \
       using VEC = Vector;                                                              \
       using MAT = DenseMatrix;                                                         \
@@ -224,8 +222,6 @@ protected:
    {                                                                                   \
       MFEM_ASSERT(var.Size() == n_input,                                               \
                  "ADFunction::operator(): var.Size() must match n_input")              \
-      MFEM_ASSERT(param.Size() == n_param,                                             \
-                 "ADFunction::operator(): var.Size() must match n_input")              \
       using SCALAR = ADReal_t;                                                         \
       using VEC = ADVector;                                                            \
       using MAT = ADMatrix;                                                            \
@@ -235,8 +231,6 @@ protected:
    AD2Real_t operator()(const AD2Vector &var) const override                           \
    {                                                                                   \
       MFEM_ASSERT(var.Size() == n_input,                                               \
-                 "ADFunction::operator(): var.Size() must match n_input")              \
-      MFEM_ASSERT(param.Size() == n_param,                                             \
                  "ADFunction::operator(): var.Size() must match n_input")              \
       using SCALAR = AD2Real_t;                                                        \
       using VEC = AD2Vector;                                                           \
@@ -494,10 +488,8 @@ struct ScaledADFunction : public ADFunction
                     real_t a)
       : ADFunction(0), f1(f1), a(a)
    {
-      MFEM_ASSERT(f1.get() != nullptr && f2.get() != nullptr,
+      MFEM_ASSERT(f1.get() != nullptr,
                   "ProductADFunction: f1 and f2 must not be null");
-      MFEM_ASSERT(f1->n_input == f2->n_input,
-                  "ProductADFunction: f1 and f2 must have the same n_input");
       n_input = f1->n_input; // Set n_input to the common input size
    }
 

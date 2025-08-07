@@ -14,8 +14,6 @@ void ADFunction::Gradient(const Vector &x, Vector &J) const
 {
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::Gradient: x.Size() must match n_input");
-   MFEM_ASSERT(param.Size() == n_param,
-               "ADFunction::Gradient: param.Size() must match n_param");
    J.SetSize(x.Size());
    ADVector x_ad(x);
    for (int i=0; i < x.Size(); i++)
@@ -39,8 +37,6 @@ void ADFunction::Hessian(const Vector &x, DenseMatrix &H) const
 {
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::Hessian: x.Size() must match n_input");
-   MFEM_ASSERT(param.Size() == n_param,
-               "ADFunction::Hessian: param.Size() must match n_param");
    H.SetSize(x.Size(), x.Size());
    AD2Vector x_ad(x);
    for (int i=0; i<x.Size(); i++) // Loop for the first derivative

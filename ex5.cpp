@@ -169,6 +169,7 @@ int main(int argc, char *argv[])
    H1_FECollection h1_fec(order, dim);
 
    QuadratureSpace qspace(&mesh, order);
+   const IntegrationRule &ir = qspace.GetIntRule(0);
    // Convert QuadratureSpace to ParFiniteElementSpace
    // shapes and nodes will not be used. only indexing purpose
    auto qfespace_and_fec = QSpaceToFESpace(qspace);
@@ -188,8 +189,12 @@ int main(int argc, char *argv[])
    }
    const int numVars = fespaces.Size();
 
+   Array<int> offsets(numVars*2+1);
+   offsets[0] = 0;
    VectorArrayCoefficient x0_cf(numVars);
    std::vector<std::unique_ptr<GridFunction>> x(numVars);
+   std::vector<std::unique_ptr<GridFunction>> latent(numVars);
+
    std::vector<std::unique_ptr<GridFunction>> x0(numVars);
    std::vector<std::unique_ptr<GridFunction>> x_min(numVars);
    std::vector<std::unique_ptr<GridFunction>> x_max(numVars);
@@ -199,21 +204,40 @@ int main(int argc, char *argv[])
    for (int i=0; i<numVars; i++)
    {
       auto fes = fespaces[i];
+      offsets[i+1] = fes->GetTrueVSize();
+      offsets[numVars + i + 1] = fes->GetTrueVSize();
+
+      // x and latent's T-vector will be set later
       x[i] = std::make_unique<ParGridFunction>(fes);
-      *x[i] = 0.0; x[i]->SetTrueVector();
+      *x[i] = 0.5;
+      latent[i] = std::make_unique<ParGridFunction>(fes);
+      *latent[i] = 0.0;
+
       x0[i] = std::make_unique<ParGridFunction>(fes);
-      *x0[i] = 0.0; x0[i]->SetTrueVector();
+      x0[i]->Randomize(); x0[i]->SetTrueVector();
+      latent_k[i] = std::make_unique<ParGridFunction>(fes);
+      *latent_k[i] = 0.0; latent_k[i]->SetTrueVector();
+
       x_min[i] = std::make_unique<ParGridFunction>(fes);
       *x_min[i] = 0.0; x_min[i]->SetTrueVector();
       x_max[i] = std::make_unique<ParGridFunction>(fes);
       *x_max[i] = 1.0; x_max[i]->SetTrueVector();
-      latent_k[i] = std::make_unique<ParGridFunction>(fes);
-      *latent_k[i] = 0.0; latent_k[i]->SetTrueVector();
 
       x0_cf.Set(i, new GridFunctionCoefficient(x0[i].get()), true);
       dual_entropies[i] = std::make_unique<FermiDiracEntropy>(
                              *x_min[i], *x_max[i]);
       primal_begin[i] = i;
+   }
+   offsets.PartialSum();
+   BlockVector x_and_psi(offsets);
+   for (int i=0; i<numVars; i++)
+   {
+      static_cast<ParGridFunction&>(*x[i]).MakeTRef(fespaces[i], x_and_psi,
+         offsets[i]);
+      x[i]->SetTrueVector();
+      static_cast<ParGridFunction&>(*latent[i]).MakeTRef(fespaces[i], x_and_psi,
+            offsets[i+numVars]);
+      latent[i]->SetTrueVector();
    }
    Vector constraints_rhs(numVars);
    Vector lambda(numVars);
@@ -229,14 +253,26 @@ int main(int argc, char *argv[])
                                   primal_begin);
 
    ParBlockNonlinearForm bnlf(fespaces);
-   constexpr ADEval u_mode = ADEval::VALUE;
-   constexpr ADEval psi_mode = ADEval::QVALUE; // treat everything as a point functional
+   // For ADDofPGnlfi, we only set primal mode
+   constexpr ADEval qfmode = ADEval::QVALUE;
+   constexpr ADEval gfmode = ADEval::VALUE;
+   switch (dim)
+   {
+      case 2:
+         bnlf.AddDomainIntegrator(new
+                                  ADBlockNonlinearFormIntegrator<qfmode, qfmode, gfmode, gfmode, gfmode>
+                                  (AL_functional, &ir));
+         break;
+      case 3:
+         bnlf.AddDomainIntegrator(new
+                                  ADBlockNonlinearFormIntegrator<qfmode, qfmode, gfmode, gfmode, gfmode, gfmode>
+                                  (AL_functional, &ir));
+         break;
+      default:
+         MFEM_ABORT("Unsupported dimension: " << dim);
+   }
+   Vector dummy;
 
-   Vector xvec(AL_functional.n_input);
-   xvec = 0.0;
-   auto &Tr = *mesh.GetElementTransformation(0);
-   const IntegrationPoint &ip = IntRules.Get(Tr.GetGeometryType(), 0).IntPoint(0);
-   AL_functional(xvec, Tr, ip);
 
    return 0;
 }
