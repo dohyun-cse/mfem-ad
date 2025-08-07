@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
    MPI_Comm comm = MPI_COMM_WORLD;
    // file name to be saved
    std::stringstream filename;
-   filename << "ad-diffusion";
+   filename << "ad-obstacle-";
    int rule_type = PGStepSizeRule::RuleType::CONSTANT;
    real_t max_alpha = 1e04;
    real_t alpha0 = 1.0;

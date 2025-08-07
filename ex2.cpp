@@ -27,7 +27,7 @@ int main(int argc, char *argv[])
 {
    // file name to be saved
    std::stringstream filename;
-   filename << "ad-diffusion";
+   filename << "ad-minimalsurface-";
 
    int order = 1;
    int ref_levels = 3;
