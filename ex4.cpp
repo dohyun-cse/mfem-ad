@@ -114,8 +114,6 @@ int main(int argc, char *argv[])
    BlockVector x_and_psi(offsets);
 
    ParGridFunction x(&h1_fes), psi(&l2_fes);
-   QuadratureFunction x_mapped(&visspace);
-   MappedGridFunctionCoefficient x_mapped_cf(&psi, [](const real_t x) { return std::exp(x); });
    ParGridFunction psik(psi);
    GridFunctionCoefficient psik_cf(&psik);
 
@@ -128,6 +126,11 @@ int main(int argc, char *argv[])
    ConstantCoefficient upper_bound(0.5);
    FermiDiracEntropy entropy(lower_bound, upper_bound);
    ADPGFunctional pg_energy(obj_energy, entropy, psik);
+   DifferentiableCoefficient entropy_cf(entropy);
+   entropy_cf.AddInput(psi);
+   VectorCoefficient &x_mapped_cf = entropy_cf.Gradient();
+   QuadratureFunction x_mapped(&visspace);
+   x_mapped = 0.0;
 
    ConstantCoefficient zero_cf(0.0);
    ParGridFunction lambda(psi), lambda_prev(psi);
@@ -167,7 +170,7 @@ int main(int argc, char *argv[])
 
    GLVis glvis("localhost", 19916, 400, 350, 2);
    glvis.Append(x, "x", "Rjclmm");
-   // glvis.Append(x_mapped, "U(psi)", "Rjclmm");
+   glvis.Append(x_mapped, "U(psi)", "RjclQmm");
    glvis.Update();
 
    real_t lambda_diff = infinity();

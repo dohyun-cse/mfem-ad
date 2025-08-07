@@ -77,6 +77,129 @@ public:
                         DenseMatrix &H) const;
    virtual void Hessian(const Vector &x, DenseMatrix &H) const;
 };
+
+class DifferentiableCoefficient : public Coefficient
+{
+private:
+   int idx;
+   class GradientCoefficient : public VectorCoefficient
+   {
+      DifferentiableCoefficient &c;
+   public:
+      GradientCoefficient(int dim, DifferentiableCoefficient &c)
+         : VectorCoefficient(dim), c(c) { }
+      void Eval(Vector &J, ElementTransformation &T,
+                const IntegrationPoint &ip) override
+      {
+         c.EvalInput(T, ip);
+         c.f.Gradient(c.x, T, ip, J);
+      }
+   };
+   friend class GradientCoefficient;
+   GradientCoefficient grad_cf;
+   class HessianCoefficient : public MatrixCoefficient
+   {
+      DifferentiableCoefficient &c;
+   public:
+      HessianCoefficient(int dim, DifferentiableCoefficient &c)
+         : MatrixCoefficient(dim), c(c) { }
+      void Eval(DenseMatrix &H, ElementTransformation &T,
+                const IntegrationPoint &ip) override
+      {
+         c.EvalInput(T, ip);
+         c.f.Hessian(c.x, T, ip, H);
+      }
+   };
+   friend class HessianCoefficient;
+   HessianCoefficient hess_cf;
+protected:
+
+   ADFunction &f;
+   mutable Vector x;
+   std::vector<Coefficient*> cfs;
+   std::vector<int> cfs_idx;
+   std::vector<VectorCoefficient*> v_cfs;
+   std::vector<int> v_cfs_idx;
+   std::vector<GridFunction*> gfs;
+   std::vector<int> gfs_idx;
+   std::vector<QuadratureFunction*> qfs;
+   std::vector<int> qfs_idx;
+public:
+   DifferentiableCoefficient(ADFunction &f)
+      : f(f), x(1), idx(0)
+      , grad_cf(f.n_input, *this)
+      , hess_cf(f.n_input, *this)
+   {}
+   DifferentiableCoefficient& AddInput(Coefficient &cf)
+   {
+      cfs.push_back(&cf);
+      cfs_idx.push_back(idx++);
+      x.SetSize(idx);
+      return *this;
+   }
+   DifferentiableCoefficient& AddInput(VectorCoefficient &vcf)
+   {
+      v_cfs.push_back(&vcf);
+      v_cfs_idx.push_back(idx);
+      idx += vcf.GetVDim();
+      x.SetSize(idx);
+      return *this;
+   }
+   DifferentiableCoefficient& AddInput(GridFunction &gf)
+   {
+      gfs.push_back(&gf);
+      gfs_idx.push_back(idx);
+      idx += gf.FESpace()->GetVDim();
+      x.SetSize(idx);
+      return *this;
+   }
+   DifferentiableCoefficient& AddInput(QuadratureFunction &qf)
+   {
+      qfs.push_back(&qf);
+      qfs_idx.push_back(idx);
+      idx += qf.GetVDim();
+      x.SetSize(idx);
+      return *this;
+   }
+
+   real_t Eval(ElementTransformation &T,
+               const IntegrationPoint &ip) override
+   {
+      EvalInput(T, ip);
+      return f(x, T, ip);
+   }
+   GradientCoefficient& Gradient() { return grad_cf; }
+   HessianCoefficient& Hessian() { return hess_cf; }
+
+protected:
+   void EvalInput(ElementTransformation &T,
+                  const IntegrationPoint &ip) const
+   {
+      Vector x_view;
+      for (int i=0; i<cfs.size(); i++)
+      {
+         x[cfs_idx[i]] = cfs[i]->Eval(T, ip);
+      }
+      for (int i=0; i<v_cfs.size(); i++)
+      {
+         x_view.SetDataAndSize(x.GetData() + v_cfs_idx[i],
+                               v_cfs[i]->GetVDim());
+         v_cfs[i]->Eval(x_view, T, ip);
+      }
+      for (int i=0; i<gfs.size(); i++)
+      {
+         x_view.SetDataAndSize(x.GetData() + gfs_idx[i],
+                               gfs[i]->FESpace()->GetVDim());
+         gfs[i]->GetVectorValue(T, ip, x_view);
+      }
+      for (int i=0; i<qfs.size(); i++)
+      {
+         x_view.SetDataAndSize(x.GetData() + qfs_idx[i],
+                               qfs[i]->GetVDim());
+         qfs[i]->GetValues(T.ElementNo, ip.index, x_view);
+      }
+   }
+};
 // Macro to generate type-varying implementation for ADFunction.
 // See, DiffusionEnergy, ..., for example of usage.
 // @param SCALAR is the name of templated scalar type
