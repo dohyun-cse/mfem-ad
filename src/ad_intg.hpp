@@ -9,27 +9,49 @@ template <ADEval mode>
 inline int ADNonlinearFormIntegrator<mode>::InitInputShapes(
    const FiniteElement &el,
    ElementTransformation &Tr,
-   DenseMatrix &shapes,
-   Vector &value_shapes,
-   DenseMatrix &grad_shapes)
+   DenseMatrix &shapes)
 {
    const int sdim = Tr.GetSpaceDim();
-   const int shapedim = (hasFlag(mode, ADEval::VALUE) ? 1 : 0)
-                        + (hasFlag(mode, ADEval::GRAD) ? sdim : 0);
+   const int dim = el.GetDim();
+   int idx[static_cast<int>(ADEval::NUMOPT)];
+   idx[0] = 0;
+   idx[1] = idx[0] + (hasFlag(mode, ADEval::QVALUE) ? 1 : 0);
+   idx[2] = idx[1] +  (hasFlag(mode, ADEval::VALUE)
+                       ? hasFlag(mode, ADEval::VECFE)
+                       ? dim // if vector-FE
+                       : 1 // if scalar-FE
+                       : 0); // no value
+   idx[3] = idx[2] + (hasFlag(mode, ADEval::GRAD) ? sdim : 0);
+   idx[4] = idx[3] + (hasFlag(mode, ADEval::DIV) ? 1 : 0);
+   idx[5] = idx[4] + (hasFlag(mode, ADEval::CURL) ? el.GetCurlDim() : 0);
+   const int shapedim = idx[5];
    const int dof = el.GetDof();
    shapes.SetSize(dof, shapedim);
 
-   if constexpr (hasFlag(mode, ADEval::QVALUE)) { shapes.SetCol(0, 0.0); }
+   if constexpr (hasFlag(mode, ADEval::QVALUE)) { shapes.SetCol(idx[0], 0.0); }
 
-   if constexpr (hasFlag(mode, ADEval::VALUE)) { shapes.GetColumnReference(hasFlag(mode, ADEval::QVALUE), value_shapes); }
+   if constexpr (hasFlag(mode, ADEval::VALUE))
+   {
+      if constexpr (hasFlag(mode, ADEval::VECFE)) { vshape.UseExternalData(shapes.GetData() + dof*idx[1], dof, dim); }
+      else { shapes.GetColumnReference(idx[1], shape); }
+   }
 
    if constexpr (hasFlag(mode, ADEval::GRAD))
    {
-      grad_shapes.UseExternalData(shapes.GetData()
-                                  + dof*hasFlag(mode, ADEval::QVALUE)
-                                  + dof*hasFlag(mode, ADEval::VALUE),
-                                  dof, sdim);
+      gshape.UseExternalData(shapes.GetData() + dof*idx[2],
+                             dof, sdim);
    }
+   if constexpr (hasFlag(mode, ADEval::DIV))
+   {
+      shapes.GetColumnReference(idx[3], divshape);
+   }
+
+   if constexpr (hasFlag(mode, ADEval::CURL))
+   {
+      curlshape.UseExternalData(shapes.GetData() + dof*idx[4],
+                                dof, el.GetCurlDim());
+   }
+
    return shapedim;
 }
 
@@ -38,16 +60,37 @@ inline void ADNonlinearFormIntegrator<mode>::CalcInputShapes(
    const FiniteElement &el,
    ElementTransformation &Tr,
    const IntegrationPoint &ip,
-   DenseMatrix &allshapes,
-   Vector &value_shapes,
-   DenseMatrix &grad_shapes)
+   DenseMatrix &allshapes)
 {
+   // Get quadrature value
+   // ip should be from the same integration rule with base quadrature
    if constexpr (hasFlag(mode, ADEval::QVALUE)) { allshapes.SetCol(0, 0.0); allshapes(ip.index, 0) = 1.0; }
+
    // Get value shape
-   if constexpr (hasFlag(mode, ADEval::VALUE)) { el.CalcPhysShape(Tr, value_shapes); }
+   if constexpr (hasFlag(mode, ADEval::VALUE))
+   {
+      if constexpr (hasFlag(mode, ADEval::VECFE)) { el.CalcVShape(Tr, vshape); }
+      else { el.CalcPhysShape(Tr, shape); }
+   }
 
    // Get gradient shape
-   if constexpr (hasFlag(mode, ADEval::GRAD)) { el.CalcPhysDShape(Tr, grad_shapes); }
+   if constexpr (hasFlag(mode, ADEval::GRAD)) { el.CalcPhysDShape(Tr, gshape); }
+
+   // Get divergence shape
+   if constexpr (hasFlag(mode, ADEval::DIV))
+   {
+      if constexpr (hasFlag(mode, ADEval::GRAD))
+      {
+         gshape.GetRowSums(divshape);
+      }
+      else
+      {
+         el.CalcPhysDivShape(Tr, divshape);
+      }
+   }
+
+   // Get divergence shape
+   if constexpr (hasFlag(mode, ADEval::CURL)) { el.CalcPhysCurlShape(Tr, curlshape); }
 }
 
 /// Perform the local action of the NonlinearFormIntegrator
@@ -65,7 +108,7 @@ real_t ADNonlinearFormIntegrator<mode>::GetElementEnergy(
 
    real_t energy = 0.0;
 
-   int shapedim = InitInputShapes(el, Tr, allshapes, shape, dshape);
+   int shapedim = InitInputShapes(el, Tr, allshapes);
    x.SetSize(f.n_input);
    if constexpr (hasFlag(mode, ADEval::VECTOR))
    {
@@ -80,7 +123,7 @@ real_t ADNonlinearFormIntegrator<mode>::GetElementEnergy(
       const IntegrationPoint &ip = ir->IntPoint(i);
       Tr.SetIntPoint(&ip);
 
-      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes);
 
       if constexpr (hasFlag(mode, ADEval::VECTOR))
       {
@@ -115,7 +158,7 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
    x.SetSize(f.n_input);
    jac.SetSize(f.n_input);
 
-   int shapedim = InitInputShapes(el, Tr, allshapes, shape, dshape);
+   int shapedim = InitInputShapes(el, Tr, allshapes);
 
    if constexpr (hasFlag(mode, ADEval::VECTOR))
    {
@@ -133,7 +176,7 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
       Tr.SetIntPoint(&ip);
       w = ip.weight * Tr.Weight();
 
-      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes);
 
       // Convert dof to x = [[value, grad], [value, grad], ...]
       if constexpr (hasFlag(mode, ADEval::VECTOR)) { MultAtB(allshapes, elfun_matview, xmat); }
@@ -170,7 +213,7 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
    elmat.SetSize(dof*vdim);
    elmat = 0.0;
 
-   int shapedim = InitInputShapes(el, Tr, allshapes, shape, dshape);
+   int shapedim = InitInputShapes(el, Tr, allshapes);
    MFEM_ASSERT(shapedim*vdim == f.n_input,
                "ADNonlinearFormIntegrator: "
                "shapedim*vdim must match n_input");
@@ -195,7 +238,7 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
       const IntegrationPoint &ip = ir->IntPoint(i);
       Tr.SetIntPoint(&ip);
       w = ip.weight * Tr.Weight();
-      CalcInputShapes(el, Tr, ip, allshapes, shape, dshape);
+      CalcInputShapes(el, Tr, ip, allshapes);
 
       // Convert dof to x = [[value, grad], [value, grad], ...]
       if constexpr (hasFlag(mode, ADEval::VECTOR)) { MultAtB(allshapes, elfun_matview, xmat); }

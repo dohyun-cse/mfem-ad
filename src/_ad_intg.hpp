@@ -32,6 +32,7 @@ enum class ADEval
 
    VECTOR  = 1 << 6, // vector-valued scalar FE
    VECFE   = 1 << 7, // vector-valued vector FE (not yet implemented)
+   NUMOPT  = 1 << 8, // number of options. If change options, change this value to last
 };
 
 constexpr ADEval operator|(ADEval a, ADEval b)
@@ -54,10 +55,7 @@ inline constexpr bool hasFlag(ADEval mode, ADEval flag)
 template <ADEval mode>
 constexpr bool isValidADEval()
 {
-   constexpr auto INVALID = ADEval::DIV
-                            | ADEval::CURL
-                            | ADEval::Hessian
-                            | ADEval::VECFE;
+   constexpr auto INVALID = ADEval::Hessian;
    if constexpr (static_cast<int>(mode & INVALID) != 0) { return false; }
    if constexpr (hasFlag(mode, ADEval::QVALUE))
    {
@@ -90,7 +88,9 @@ private:
    DenseMatrix allshapes; // all shapes, [?shape, ?dshape]
    Vector shape, shape1, shape2;
    DenseMatrix vshape, vshape1, vshape2;
-   DenseMatrix dshape, gshape1, gshape2;
+   DenseMatrix gshape, gshape1, gshape2;
+   Vector divshape, divshape1, divshape2;
+   DenseMatrix curlshape, curlshape1, curlshape2;
    Vector nor;
    // DenseMatrix d2shape, d2shape1, d2shape2; // for hessian. Not implemented yet.
 public:
@@ -144,19 +144,15 @@ protected:
    // Initialize shapes to [?value_shapes, ?grad_shapes]
    // and make value_shapes and grad_shapes reference to
    // allshapes.
-   inline static int InitInputShapes(const FiniteElement &el,
+   inline int InitInputShapes(const FiniteElement &el,
                                      ElementTransformation &Tr,
-                                     DenseMatrix &shapes,
-                                     Vector &value_shapes,
-                                     DenseMatrix &grad_shapes);
+                                     DenseMatrix &shapes);
 
    // Calculate parameter, shape, dshape at the given integration point
-   inline static void CalcInputShapes(const FiniteElement &el,
+   inline void CalcInputShapes(const FiniteElement &el,
                                       ElementTransformation &Tr,
                                       const IntegrationPoint &ip,
-                                      DenseMatrix &shapes,
-                                      Vector &value_shapes,
-                                      DenseMatrix &grad_shapes);
+                                      DenseMatrix &shapes);
    template <ADEval... modes>
    friend class ADBlockNonlinearFormIntegrator;
 private:
