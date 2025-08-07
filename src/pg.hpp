@@ -35,7 +35,8 @@ struct PGStepSizeRule
 // Base struct for dual entropy functions
 struct ADEntropy : public ADFunction
 {
-   using ADFunction::ADFunction;
+   ADEntropy(int n_input)
+      : ADFunction(n_input) { }
 };
 
 // Construct augmented energy for proximal Galerkin
@@ -48,70 +49,99 @@ struct ADEntropy : public ADFunction
 // The parameter should be [org_param, entropy_param, alpha, psi_k]
 struct ADPGFunctional : public ADFunction
 {
-   int primal_begin;
-   int primal_size;
+   std::vector<int> primal_idx;
+   std::vector<int> entropy_size;
    ADFunction &f;
-   ADEntropy &dual_entropy;
-   GridFunction *latent_k_gf;
-   mutable Vector latent_k;
+   std::vector<ADEntropy*> dual_entropy;
+   std::vector<GridFunction*> latent_k_gf;
+   mutable std::vector<Vector> latent_k;
    real_t alpha = 1.0;
    std::unique_ptr<VectorCoefficient> owned_cf;
 
-   ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy, int primal_begin=0)
+   ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy, int idx=0)
       : ADFunction(f.n_input + dual_entropy.n_input)
-      , f(f), dual_entropy(dual_entropy)
-      , primal_begin(primal_begin)
-      , primal_size(dual_entropy.n_input)
-      , latent_k(primal_size)
+      , f(f), dual_entropy({&dual_entropy})
+   , primal_idx(1)
+   , entropy_size(1)
+   , latent_k_gf(1)
+   , latent_k(1)
    {
-      MFEM_VERIFY(f.n_input >= primal_begin + primal_size,
-                  "ADPGFunctional: f.n_input must be larger than "
-                  "primal_begin + primal_size");
+      this->primal_idx[0] = idx;
+      entropy_size[0] = dual_entropy.n_input;
+      MFEM_VERIFY(f.n_input >= this->primal_idx[0] + entropy_size[0],
+                  "ADPGFunctional: f.n_input must not exceed "
+                  "primal_begin + dual_entropy.n_input:"
+                  << f.n_input << " >= " << n_input);
+      latent_k[0].SetSize(entropy_size[0]);
    }
    ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy,
-                  GridFunction &latent_k, int primal_begin=0)
-      : ADPGFunctional(f, dual_entropy, primal_begin)
+                  GridFunction &latent_k, int idx=0)
+      : ADPGFunctional(f, dual_entropy, idx)
    {
       SetPrevLatent(latent_k);
    }
-
-   ADEntropy &GetEntropy() const { return dual_entropy; }
-   std::vector<ADEntropy*> GetEntropies() const
+   // Multiple entropies
+   ADPGFunctional(ADFunction &f, std::vector<ADEntropy*> &dual_entropy,
+                  std::vector<int> &primal_begin)
+      : ADFunction(f.n_input)
+      , f(f), dual_entropy(dual_entropy)
+      , primal_idx(primal_begin)
+      , entropy_size(dual_entropy.size())
+      , latent_k_gf(dual_entropy.size())
+      , latent_k(dual_entropy.size())
    {
-      std::vector<ADEntropy*> entropies{ &dual_entropy };
-      if (dynamic_cast<ADPGFunctional*>(&f))
+      for (int i=0; i<dual_entropy.size(); i++)
       {
-         // f is also a PGFunctional, we append its entropy
-         auto pgf = dynamic_cast<const ADPGFunctional*>(&f);
-         auto f_entropies = pgf->GetEntropies();
-         entropies.insert(entropies.end(), f_entropies.begin(), f_entropies.end());
+         n_input += dual_entropy[i]->n_input;
       }
-      return entropies;
+      MFEM_VERIFY(f.n_input >= n_input,
+                  "ADPGFunctional: f.n_input must be larger than "
+                  "primal_begin + dual_entropy.n_input");
+      for (int i=0; i<dual_entropy.size(); i++)
+      {
+         entropy_size[i] = dual_entropy[i]->n_input;
+         latent_k[i].SetSize(entropy_size[i]);
+      }
    }
+   ADPGFunctional(ADFunction &f, std::vector<ADEntropy*> &dual_entropy,
+                  std::vector<GridFunction*> &latent_k, std::vector<int> primal_begin)
+      : ADPGFunctional(f, dual_entropy, primal_begin)
+   {
+      MFEM_VERIFY(latent_k.size() == dual_entropy.size(),
+                  "ADPGFunctional: latent_k must have the same size as dual_entropy");
+      MFEM_VERIFY(latent_k.size() == primal_begin.size(),
+                  "ADPGFunctional: latent_k must have the same size as primal_begin");
+      for (int i=0; i<latent_k.size(); i++)
+      {
+         SetPrevLatent(*latent_k[i], i);
+      }
+   }
+
+   ADFunction &GetObjective() const
+   { return f; }
+
+   ADEntropy &GetEntropy() const
+   {
+      MFEM_VERIFY(dual_entropy.size() == 1,
+                  "ADPGFunctional: GetEntropy() can only be called when there is a single entropy");
+      return *dual_entropy[0];
+   }
+   std::vector<ADEntropy*> GetEntropies() const
+   { return dual_entropy; }
 
    // Set the penalty parameter alpha
-   // if propagate is true, and f is also ADPGFunctional,
-   // then propagate the alpha to f
-   void SetAlpha(real_t alpha, bool propagate=false)
-   {
-      this->alpha = alpha;
-      if (propagate)
-      {
-         // propagate alpha to f if f is also ADPGFunctional
-         if (auto pgf = dynamic_cast<ADPGFunctional*>(&f))
-         {
-            pgf->SetAlpha(alpha, propagate);
-         }
-      }
-   }
+   void SetAlpha(real_t alpha) { this->alpha = alpha; }
+
    real_t GetAlpha() const { return alpha; }
 
-   void SetPrevLatent(GridFunction &psi_k)
+   void SetPrevLatent(GridFunction &psi_k, int i=0)
    {
-      MFEM_VERIFY(psi_k.FESpace()->GetVDim() == primal_size,
+      MFEM_VERIFY(psi_k.FESpace()->GetVDim() == entropy_size[i],
                   "ADPGFunctional: psi_k must have the same dimension as "
                   "dual_entropy.n_input");
-      latent_k_gf = &psi_k;
+      MFEM_VERIFY(i < latent_k.size(),
+                  "ADPGFunctional: i must be less than latent_k.size()");
+      latent_k_gf[i] = &psi_k;
    }
 
    void ProcessParameters(ElementTransformation &Tr,
@@ -119,64 +149,38 @@ struct ADPGFunctional : public ADFunction
    {
       MFEM_ASSERT(latent_k_cf != nullptr,
                   "ADPGFunctional: latent_k_cf is not set. Use SetPrevLatent() to set it.");
-      latent_k_gf->GetVectorValue(Tr, ip, latent_k);
-      dual_entropy.ProcessParameters(Tr, ip);
+      for (int i=0; i<latent_k.size(); i++)
+      {
+         latent_k_gf[i]->GetVectorValue(Tr, ip, latent_k[i]);
+         dual_entropy[i]->ProcessParameters(Tr, ip);
+      }
       f.ProcessParameters(Tr, ip);
    }
 
-   real_t operator()(const Vector &x) const override;
-   using ADFunction::operator();
-   // default Jacobian evaluator
-   ADReal_t operator()(const ADVector &x) const override;
-
-   // default Hessian evaluator
-   AD2Real_t operator()(const AD2Vector &x) const override;
-};
-
-// Proximal Galerkin functional with QF latent variable
-struct ADPGFunctionalQ : public ADPGFunctional
-{
-   QuadratureFunction *latent_k_qf;
-
-   ADPGFunctionalQ(ADFunction &f, ADEntropy &dual_entropy, int primal_begin=0)
-      : ADPGFunctional(f, dual_entropy, primal_begin)
+   AD_IMPL(T, V, M, x_latent,
    {
-      MFEM_VERIFY(f.n_input >= primal_begin + primal_size,
-                  "ADPGFunctional: f.n_input must be larger than "
-                  "primal_begin + primal_size");
-   }
-   ADPGFunctionalQ(ADFunction &f, ADEntropy &dual_entropy,
-                   QuadratureFunction &latent_k, int primal_begin=0)
-      : ADPGFunctional(f, dual_entropy, primal_begin)
-   {
-      SetPrevLatent(latent_k);
-   }
+      // variables
+      const V x(x_latent.GetData(), f.n_input);
+      std::vector<V> latent(entropy_size.size());
+      for (int i=0; i<entropy_size.size(); i++)
+      {
+         latent[i].SetDataAndSize(x_latent.GetData() + f.n_input + primal_idx[i],
+                                  entropy_size[i]);
+      }
 
-   void SetPrevLatent(QuadratureFunction &psi_k)
-   {
-      MFEM_VERIFY(psi_k.GetVDim() == primal_size,
-                  "ADPGFunctional: psi_k must have the same dimension as "
-                  "dual_entropy.n_input");
-      latent_k_qf = &psi_k;
-   }
-
-   void ProcessParameters(ElementTransformation &Tr,
-                          const IntegrationPoint &ip) const override
-   {
-      MFEM_ASSERT(latent_k_cf != nullptr,
-                  "ADPGFunctional: latent_k_cf is not set. Use SetPrevLatent() to set it.");
-      latent_k_qf->GetValues(Tr.ElementNo, ip.index, latent_k);
-      dual_entropy.ProcessParameters(Tr, ip);
-      f.ProcessParameters(Tr, ip);
-   }
-
-   real_t operator()(const Vector &x) const override;
-   using ADFunction::operator();
-   // default Jacobian evaluator
-   ADReal_t operator()(const ADVector &x) const override;
-
-   // default Hessian evaluator
-   AD2Real_t operator()(const AD2Vector &x) const override;
+      // evaluate mixed value
+      T cross_entropy = T();
+      T dual_entropy_sum = T();
+      for (int i=0; i<dual_entropy.size(); i++)
+      {
+         for (int j=0; j<dual_entropy[i]->n_input; j++)
+         {
+            cross_entropy += x[primal_idx[i] + j]*(latent[i][j] - latent_k[i][j]);
+            dual_entropy_sum += (*dual_entropy[i])(latent[i]);
+         }
+      }
+      return f(x) + (1.0 / alpha)*(cross_entropy - dual_entropy_sum);
+   });
 };
 
 enum LatentType
