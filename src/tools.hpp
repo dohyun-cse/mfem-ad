@@ -70,4 +70,26 @@ QSpaceToFESpace(QuadratureSpace &qs)
    return std::make_tuple(std::move(fes), std::move(fec));
 }
 
+inline Array<int> GetOffsets(const Array<FiniteElementSpace*> &fespaces)
+{
+   Array<int> offsets(fespaces.Size() + 1);
+   offsets[0] = 0;
+   for (int i=0; i<fespaces.Size(); i++)
+   {
+      offsets[i+1] = offsets[i] + fespaces[i]->GetVSize();
+   }
+   return std::move(offsets);
+}
+inline Array<int> GetTrueOffsets(const Array<FiniteElementSpace*> &fespaces)
+{
+   Array<int> offsets(fespaces.Size() + 1);
+   offsets[0] = 0;
+   for (int i=0; i<fespaces.Size(); i++)
+   {
+      offsets[i+1] = offsets[i] + fespaces[i]->GetTrueVSize();
+   }
+   return std::move(offsets);
+}
+
+
 };
