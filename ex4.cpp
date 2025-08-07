@@ -125,7 +125,7 @@ int main(int argc, char *argv[])
    ConstantCoefficient lower_bound(0.0);
    ConstantCoefficient upper_bound(0.5);
    FermiDiracEntropy entropy(lower_bound, upper_bound);
-   ADPGFunctional pg_energy(obj_energy, entropy, psik);
+   ADPGFunctional pg_functional(obj_energy, entropy, psik);
    DifferentiableCoefficient entropy_cf(entropy);
    entropy_cf.AddInput(psi);
    VectorCoefficient &x_mapped_cf = entropy_cf.Gradient();
@@ -142,7 +142,7 @@ int main(int argc, char *argv[])
    constexpr ADEval psi_mode = ADEval::VALUE;
    bnlf.AddDomainIntegrator(
       new ADBlockNonlinearFormIntegrator<u_mode, psi_mode>(
-         pg_energy, &ir)
+         pg_functional, &ir)
    );
 
    BlockVector rhs(offsets);
@@ -178,7 +178,7 @@ int main(int argc, char *argv[])
    {
       real_t alpha = alpha_rule.Get(i);
       out << "PG iteration " << i + 1 << " with alpha=" << alpha << std::endl;
-      pg_energy.SetAlpha(alpha);
+      pg_functional.SetAlpha(alpha);
       psik = psi;
       psik.SetTrueVector();
       solver.Mult(rhs, x_and_psi);
@@ -192,7 +192,7 @@ int main(int argc, char *argv[])
       x.SetFromTrueVector();
       psi.SetFromTrueVector();
       subtract(psi, psik, lambda);
-      lambda *= 1.0 / pg_energy.GetAlpha();
+      lambda *= 1.0 / pg_functional.GetAlpha();
       if (i > 0) { lambda_diff = lambda.ComputeL1Error(lambda_prev_cf); }
       lambda_prev = lambda;
 

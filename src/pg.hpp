@@ -75,6 +75,20 @@ struct ADPGFunctional : public ADFunction
       SetPrevLatent(latent_k);
    }
 
+   ADEntropy &GetEntropy() const { return dual_entropy; }
+   std::vector<ADEntropy*> GetEntropies() const
+   {
+      std::vector<ADEntropy*> entropies{ &dual_entropy };
+      if (dynamic_cast<ADPGFunctional*>(&f))
+      {
+         // f is also a PGFunctional, we append its entropy
+         auto pgf = dynamic_cast<const ADPGFunctional*>(&f);
+         auto f_entropies = pgf->GetEntropies();
+         entropies.insert(entropies.end(), f_entropies.begin(), f_entropies.end());
+      }
+      return entropies;
+   }
+
    // Set the penalty parameter alpha
    // if propagate is true, and f is also ADPGFunctional,
    // then propagate the alpha to f
@@ -106,6 +120,52 @@ struct ADPGFunctional : public ADFunction
       MFEM_ASSERT(latent_k_cf != nullptr,
                   "ADPGFunctional: latent_k_cf is not set. Use SetPrevLatent() to set it.");
       latent_k_gf->GetVectorValue(Tr, ip, latent_k);
+      dual_entropy.ProcessParameters(Tr, ip);
+      f.ProcessParameters(Tr, ip);
+   }
+
+   real_t operator()(const Vector &x) const override;
+   using ADFunction::operator();
+   // default Jacobian evaluator
+   ADReal_t operator()(const ADVector &x) const override;
+
+   // default Hessian evaluator
+   AD2Real_t operator()(const AD2Vector &x) const override;
+};
+
+// Proximal Galerkin functional with QF latent variable
+struct ADPGFunctionalQ : public ADPGFunctional
+{
+   QuadratureFunction *latent_k_qf;
+
+   ADPGFunctionalQ(ADFunction &f, ADEntropy &dual_entropy, int primal_begin=0)
+      : ADPGFunctional(f, dual_entropy, primal_begin)
+   {
+      MFEM_VERIFY(f.n_input >= primal_begin + primal_size,
+                  "ADPGFunctional: f.n_input must be larger than "
+                  "primal_begin + primal_size");
+   }
+   ADPGFunctionalQ(ADFunction &f, ADEntropy &dual_entropy,
+                   QuadratureFunction &latent_k, int primal_begin=0)
+      : ADPGFunctional(f, dual_entropy, primal_begin)
+   {
+      SetPrevLatent(latent_k);
+   }
+
+   void SetPrevLatent(QuadratureFunction &psi_k)
+   {
+      MFEM_VERIFY(psi_k.GetVDim() == primal_size,
+                  "ADPGFunctional: psi_k must have the same dimension as "
+                  "dual_entropy.n_input");
+      latent_k_qf = &psi_k;
+   }
+
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      MFEM_ASSERT(latent_k_cf != nullptr,
+                  "ADPGFunctional: latent_k_cf is not set. Use SetPrevLatent() to set it.");
+      latent_k_qf->GetValues(Tr.ElementNo, ip.index, latent_k);
       dual_entropy.ProcessParameters(Tr, ip);
       f.ProcessParameters(Tr, ip);
    }
