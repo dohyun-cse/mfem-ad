@@ -52,8 +52,14 @@ QSpaceToFESpace(QuadratureSpace &qs)
 {
    Mesh *mesh = qs.GetMesh();
    const int dim = mesh->Dimension();
+   Geometry::Type geom = mesh->GetTypicalElementGeometry();
+   MFEM_VERIFY(geom != Geometry::TRIANGLE &&
+               geom != Geometry::TETRAHEDRON &&
+               geom != Geometry::PRISM &&
+               geom != Geometry::PYRAMID,
+               "QSpaceToFESpace: only support tensor product elements");
    std::unique_ptr<L2_FECollection> fec
-      = std::make_unique<L2_FECollection> (qs.GetOrder(), dim);
+      = std::make_unique<L2_FECollection> (qs.GetOrder()/2, dim);
 
    std::unique_ptr<FiniteElementSpace> fes;
 #ifdef MFEM_USE_MPI

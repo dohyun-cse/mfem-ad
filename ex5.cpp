@@ -9,9 +9,9 @@
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/ad_intg.hpp"
 #include "src/tools.hpp"
 #include "src/pg.hpp"
+#include "src/dof_pg.hpp"
 
 using namespace std;
 using namespace mfem;
@@ -169,13 +169,23 @@ int main(int argc, char *argv[])
    H1_FECollection h1_fec(order, dim);
 
    QuadratureSpace qspace(&mesh, order);
+   // Convert QuadratureSpace to ParFiniteElementSpace
+   // shapes and nodes will not be used. only indexing purpose
    auto qfespace_and_fec = QSpaceToFESpace(qspace);
    ParFiniteElementSpace &qf_fes = static_cast<ParFiniteElementSpace&>
                                    (*std::get<0>(qfespace_and_fec));
+   MFEM_VERIFY(qspace.GetSize() == qf_fes.GetTrueVSize(),
+               "QuadratureSpace and ParFiniteElementSpace sizes differ: "
+               << qspace.GetSize() << " != " << qf_fes.GetTrueVSize()
+              );
    ParFiniteElementSpace l2_fes(&mesh, &l2_fec);
    ParFiniteElementSpace h1_fes(&mesh, &h1_fec);
 
-   Array<ParFiniteElementSpace*> fespaces{&qf_fes, &qf_fes, &l2_fes, &h1_fes, &h1_fes};
+   Array<ParFiniteElementSpace*> fespaces{&qf_fes, &qf_fes, &l2_fes};
+   for (int i=0; i<dim; i++)
+   {
+      fespaces.Append(&h1_fes);
+   }
    const int numVars = fespaces.Size();
 
    VectorArrayCoefficient x0_cf(numVars);
@@ -184,24 +194,26 @@ int main(int argc, char *argv[])
    std::vector<std::unique_ptr<GridFunction>> x_min(numVars);
    std::vector<std::unique_ptr<GridFunction>> x_max(numVars);
    std::vector<std::unique_ptr<GridFunction>> latent_k(numVars);
-   std::vector<std::unique_ptr<FermiDiracEntropy>> dual_entropies(numVars);
+   std::vector<std::unique_ptr<ADEntropy>> dual_entropies(numVars);
+   std::vector<int> primal_begin(numVars);
    for (int i=0; i<numVars; i++)
    {
       auto fes = fespaces[i];
-      x[i] = std::make_unique<GridFunction>(fes);
+      x[i] = std::make_unique<ParGridFunction>(fes);
       *x[i] = 0.0; x[i]->SetTrueVector();
-      x0[i] = std::make_unique<GridFunction>(fes);
+      x0[i] = std::make_unique<ParGridFunction>(fes);
       *x0[i] = 0.0; x0[i]->SetTrueVector();
-      x_min[i] = std::make_unique<GridFunction>(fes);
+      x_min[i] = std::make_unique<ParGridFunction>(fes);
       *x_min[i] = 0.0; x_min[i]->SetTrueVector();
-      x_max[i] = std::make_unique<GridFunction>(fes);
+      x_max[i] = std::make_unique<ParGridFunction>(fes);
       *x_max[i] = 1.0; x_max[i]->SetTrueVector();
-      latent_k[i] = std::make_unique<GridFunction>(fes);
+      latent_k[i] = std::make_unique<ParGridFunction>(fes);
       *latent_k[i] = 0.0; latent_k[i]->SetTrueVector();
 
       x0_cf.Set(i, new GridFunctionCoefficient(x0[i].get()), true);
       dual_entropies[i] = std::make_unique<FermiDiracEntropy>(
                              *x_min[i], *x_max[i]);
+      primal_begin[i] = i;
    }
    Vector constraints_rhs(numVars);
    Vector lambda(numVars);
@@ -213,13 +225,12 @@ int main(int argc, char *argv[])
    // lambda and mu are passed by reference.
    // Changing them outside will change teh functional, too.
    RemapALFunctional<4> AL_functional(x0_cf, target, lambda, mu, domain_volume);
-   std::vector<std::unique_ptr<ADPGFunctional>> energies(numVars);
-   // Chain PG functionals
-   for (int i=0; i<numVars; i++)
-   {
-      if (i == 0) { energies[i] = std::make_unique<ADPGFunctional>(AL_functional, *dual_entropies[i], *latent_k[i]); }
-      else { energies[i] = std::make_unique<ADPGFunctional>(*energies[i-1], *dual_entropies[i], *latent_k[i]); }
-   }
+   ADPGFunctional alpg_functional(AL_functional, dual_entropies, latent_k,
+                                  primal_begin);
+
+   ParBlockNonlinearForm bnlf(fespaces);
+   constexpr ADEval u_mode = ADEval::VALUE;
+   constexpr ADEval psi_mode = ADEval::QVALUE; // treat everything as a point functional
 
    Vector xvec(AL_functional.n_input);
    xvec = 0.0;
