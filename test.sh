@@ -7,4 +7,4 @@ make -j;
 ./ex2
 ./ex3
 mpirun -np 8 ./ex4 -rule 2 -a0 0.1 -ar 2 # test with 0.1*2^iter
-./ex5
+# ./ex5

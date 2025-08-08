@@ -59,106 +59,31 @@ struct MomentumFunctional : public ADFunction
    AD_IMPL(T, V, M, x, return x[0]*x[1]*x[3+comp];);
 };
 
-template <int opt_type>
-struct RemapALFunctional : public ADFunction
+
+enum RemapConType
 {
-   int al_eval_mode = -1; // -1: full AL, 0: objective, >0: constraint comp
-   int dim;
-   real_t domain_volume;
-   MassEnergy l2_energy;
-   DiffEnergy l2_diff_sqrd;
-   VolumeFunctional volume;
-   MassFunctional mass;
-   InternalEnergyFunctional internal_energy;
-   TotalEnergyFunctional total_energy;
-   MomentumFunctional momentum[3];
-   std::vector<ADFunction*> constraints;
-   Vector con_target; // will be divided by domain volume as this is point-functional
-   const Vector &lambda;
-   const real_t &mu;
-
-   RemapALFunctional(VectorCoefficient &x0, Vector &con_target,
-                     Vector &lambda, real_t &mu, real_t domain_volume)
-      : ADFunction(x0.GetVDim())
-      , dim(con_target.Size()) // dim is only necessary for opt_type == 3
-      , domain_volume(domain_volume)
-      , l2_energy(n_input)
-      , l2_diff_sqrd(l2_energy, x0)
-      , volume(n_input), mass(n_input)
-      , internal_energy(n_input)
-      , total_energy(n_input)
-      , momentum{ MomentumFunctional(n_input,0),
-                  MomentumFunctional(n_input,1),
-                  MomentumFunctional(n_input,2) }
-      , con_target(con_target)
-      , lambda(lambda)
-      , mu(mu)
-   {
-      if (opt_type >= 0) { constraints.push_back(&volume); }
-      if (opt_type >= 1) { constraints.push_back(&mass); }
-      if (opt_type == 2) { constraints.push_back(&internal_energy); }
-      else if (opt_type > 2) { constraints.push_back(&total_energy); }
-      if (opt_type == 3)
-      {
-         if (dim >= 1) { constraints.push_back(&momentum[0]); }
-         if (dim >= 2) { constraints.push_back(&momentum[1]); }
-         if (dim >= 3) { constraints.push_back(&momentum[2]); }
-      }
-      con_target *= 1.0 / domain_volume;
-   }
-
-   void SetTarget(Vector &con_target)
-   {
-      MFEM_VERIFY(con_target.Size() == this->con_target.Size(),
-                  "RemapALFunctional: con_target size mismatch");
-      this->con_target = con_target;
-      this->con_target *= 1.0 / domain_volume;
-   }
-
-   // evaluate the Augmented Lagrangian functional
-   void ALMode() { this->al_eval_mode = -1; }
-   // evaluate only the objective part
-   void ObjectiveMode() { this->al_eval_mode = 0; }
-   // evaluate only the specific component of the constraint
-   // That is, it will return c(x)
-   void ConstraintMode(int comp)
-   {
-      MFEM_VERIFY(comp >= 0 && comp < lambda.Size(),
-                  "RemapALFunctional: comp must be in [0, n_input)");
-      this->al_eval_mode = comp + 1;
-
-   }
-
-   void ProcessParameters(ElementTransformation &Tr,
-                          const IntegrationPoint &ip) const override
-   {
-      if (al_eval_mode <= 0) { l2_diff_sqrd.ProcessParameters(Tr, ip); }
-   }
-
-   // Evaluate lambda*c(x) + (mu/2)*c(x)^2
-   template <typename T, typename V>
-   T evalAL(V &x, int idx) const
-   {
-      T cx = (*constraints[idx])(x) - con_target[idx];
-      if (al_eval_mode > 0) { return cx; }
-      return cx*(lambda[idx] + mu*0.5*cx);
-   }
-
-   AD_IMPL(T, V, M, x,
-   {
-      if (int comp = al_eval_mode > 0)
-      {
-         return evalAL<T>(x, comp);
-      }
-      T result = l2_diff_sqrd(x); // (1/2)*||x-x0||^2
-      if (al_eval_mode == 0) { return result; }
-      for (int i = 0; i < constraints.size(); i++)
-      {
-         result += evalAL<T>(x, i);
-      }
-      return result;
-   });
+   IND, IND_RHO, IND_RHO_E, HYDRO
 };
+std::vector<std::unique_ptr<ADFunction>>
+MakeConstraints(int con_type, int dim=-1)
+{
+   std::vector<std::unique_ptr<ADFunction>> constraints;
+   int numVars;
+   if (con_type < HYDRO) { numVars = con_type; }
+   else { numVars = con_type + dim - 1; }
+
+   if (con_type >= IND) { constraints.push_back(std::make_unique<VolumeFunctional>(numVars)); }
+   if (con_type >= IND_RHO) { constraints.push_back(std::make_unique<MassFunctional>(numVars)); }
+   if (con_type >= IND_RHO_E) { constraints.push_back(std::make_unique<InternalEnergyFunctional>(numVars)); }
+   if (con_type == HYDRO)
+   {
+      for (int d=0; d<dim; d++)
+      {
+         constraints.push_back(std::make_unique<MomentumFunctional>(numVars, d));
+      }
+   }
+   return std::move(constraints);
+}
 
 int main(int argc, char *argv[])
 {
@@ -168,8 +93,8 @@ int main(int argc, char *argv[])
    Hypre::Init();
    MPI_Comm comm = MPI_COMM_WORLD;
 
-   int order = 3;
-   int ref_levels = 3;
+   int order = 2;
+   int ref_levels = 2;
    bool visualization = false;
    bool paraview = false;
 
@@ -220,15 +145,23 @@ int main(int argc, char *argv[])
    {
       fespaces.Append(&h1_fes);
    }
+   HYPRE_BigInt glb_siz = 0;
+   for (int i=0; i<fespaces.Size(); i++)
+   {
+      auto fes_size = fespaces[i]->GlobalTrueVSize();
+      glb_siz += fes_size;
+      out << "FESpace " << i << ": " << fes_size << std::endl;
+   }
+   out << "Total global size: " << glb_siz << std::endl;
    const int numVars = fespaces.Size();
    Array<int> offsets = GetTrueOffsets(fespaces);
    Array<ParFiniteElementSpace*> all_fespaces(fespaces);
    all_fespaces.Append(fespaces);
    Array<int> all_offsets = GetTrueOffsets(all_fespaces);
    BlockVector x_and_psi(all_offsets);
-   BlockVector x_vec(x_and_psi, offsets);
-   BlockVector psi_vec(x_and_psi.GetData() + offsets[numVars], offsets);
-   BlockVector x0_vec(offsets), latent_k_vec(offsets);
+   BlockVector x_tvec(x_and_psi, offsets);
+   BlockVector psi_tvec(x_and_psi.GetData() + offsets[numVars], offsets);
+   BlockVector x0_tvec(offsets), latent_k_tvec(offsets);
 
    VectorArrayCoefficient x0_cf(numVars);
    std::vector<std::unique_ptr<GridFunction>> x(numVars);
@@ -245,11 +178,11 @@ int main(int argc, char *argv[])
       auto fes = fespaces[i];
 
       x0[i] = std::make_unique<ParGridFunction>(fes);
-      x0[i]->MakeTRef(fespaces[i], x0_vec, offsets[i]);
+      x0[i]->MakeTRef(fespaces[i], x0_tvec, offsets[i]);
       (*x0[i]) = 0.5;
       x0[i]->SetTrueVector();
       latent_k[i] = std::make_unique<ParGridFunction>(fes);
-      latent_k[i]->MakeTRef(fespaces[i], latent_k_vec, offsets[i]);
+      latent_k[i]->MakeTRef(fespaces[i], latent_k_tvec, offsets[i]);
       *latent_k[i] = 0.0;
       latent_k[i]->SetTrueVector();
 
@@ -264,31 +197,27 @@ int main(int argc, char *argv[])
 
       // x and latent's T-vector will be set later
       x[i] = std::make_unique<ParGridFunction>(fes);
-      x[i]->MakeTRef(fespaces[i], x_vec, offsets[i]);
+      x[i]->MakeTRef(fespaces[i], x_tvec, offsets[i]);
       *x[i] = *x0[i];
       x[i]->SetTrueVector();
       latent[i] = std::make_unique<ParGridFunction>(fes);
-      latent[i]->MakeTRef(fespaces[i], psi_vec, offsets[i]);
+      latent[i]->MakeTRef(fespaces[i], psi_tvec, offsets[i]);
       *latent[i] = 0.0;
       latent[i]->SetTrueVector();
 
       primal_begin[i] = i;
    }
 
-   Vector constraints_rhs(numVars);
-   Vector lambda(numVars);
-   lambda = 0.0;
-   real_t mu(1e-02);
-   Vector con_target(numVars);
-   con_target = 0.0;
-   // lambda and mu are passed by reference.
-   // Changing them outside will change teh functional, too.
-   RemapALFunctional<4> AL_functional(x0_cf, con_target, lambda, mu,
-                                      domain_volume);
+   std::vector<std::unique_ptr<ADFunction>> constraints
+      = MakeConstraints(HYDRO, dim);
    MassEnergy bare_obj_energy(numVars);
    DiffEnergy obj_energy(bare_obj_energy, x0_cf);
-   ADPGFunctional alpg_functional(AL_functional, dual_entropies, latent_k,
-                                  primal_begin);
+   ALFunctional AL_functional(obj_energy);
+   for (int i=0; i<constraints.size(); i++)
+   {
+      AL_functional.AddEqConstraint(*constraints[i]);
+   }
+   ADPGFunctional alpg_functional(AL_functional, dual_entropies, latent_k, primal_begin);
 
    ParBlockNonlinearForm bnlf(all_fespaces);
    // For ADDofPGnlfi, we only set primal mode
@@ -328,21 +257,28 @@ int main(int argc, char *argv[])
       glvis.Append(*x[i], std::to_string(i).c_str(), "Rjclmm");
    }
 
+   Vector con_target(numVars);
    for (int i=0; i<numVars; i++)
    {
-      AL_functional.ConstraintMode(i);
-      con_target[i] += bnlf.GetEnergy(x_and_psi) + 1e-06;
+      AL_functional.EqConstraintMode(i);
+      con_target[i] = bnlf.GetEnergy(x_and_psi) - 1e-06;
+      AL_functional.SetEqRHS(i, con_target[i]);
    }
-   AL_functional.SetTarget(con_target);
+   Vector &lambda = AL_functional.GetLambda();
+   real_t &mu = AL_functional.GetPenalty();
+   mu = 0.05;
 
    Vector dummy;
+   AL_functional.ObjectiveMode();
+   // Initialize psi.
+   solver.Mult(dummy, x_and_psi);
    for (int it_PG=0; it_PG<100; it_PG++)
    {
       out << "PG iteration " << it_PG + 1 << std::endl;
       // update alpha
       alpg_functional.SetAlpha(1.0);
       // Set proximal center
-      latent_k_vec = psi_vec;
+      latent_k_tvec = psi_tvec;
       for (int i=0; i<numVars; i++) { latent_k[i]->SetFromTrueVector(); }
 
       for (int it_AL=0; it_AL<100; it_AL++)
@@ -356,14 +292,13 @@ int main(int argc, char *argv[])
             x[i]->SetFromTrueVector();
             latent[i]->SetFromTrueVector();
          }
-         out << "    lambda = ";
+         out << "    lambda and C = ";
          for (int i=0; i<numVars; i++)
          {
-            AL_functional.ConstraintMode(i);
+            AL_functional.EqConstraintMode(i);
             real_t cval = bnlf.GetEnergy(x_and_psi);
-            out << "    Constraint " << i << " : " << cval << std::endl;
             lambda[i] += mu*cval;
-            out << lambda[i] << ", ";
+            out << "(" << lambda[i] << ", " << cval << "), ";
          }
          out << std::endl;
       }
