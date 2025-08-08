@@ -25,6 +25,7 @@ void Print(DenseMatrix &H, bool last_linebreak=true)
    }
    cout << std::flush;
 }
+
 void Print(DenseTensor &H)
 {
    for (int k=0; k<H.SizeK(); k++)
@@ -63,6 +64,7 @@ void jacobian(const Vector &x, Vector &J)
    J[1] = std::sin(x(0)) * std::exp(x(1));
    J[2] = 3.0 * std::pow(x(2), 2.0);
 }
+
 void hessian(const Vector &x, DenseMatrix &H)
 {
    // J[0] = cos(x(0)) * exp(x(1));
