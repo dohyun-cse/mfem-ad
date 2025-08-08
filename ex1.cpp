@@ -61,16 +61,9 @@ int main(int argc, char *argv[])
 
    GridFunction x(&fes);
    x = 0.0;
-   NewtonSolver solver;
-   UMFPackSolver lin_solver;
-   solver.SetSolver(lin_solver);
-   solver.SetOperator(nlf);
-   solver.SetAbsTol(1e-10);
-   solver.SetRelTol(1e-10);
-   IterativeSolver::PrintLevel print_level;
-   print_level.iterations = true;
-   solver.SetPrintLevel(print_level);
-   solver.Mult(load, x);
+   SparseMatrix &op = static_cast<SparseMatrix&>(nlf.GetGradient(x));
+   UMFPackSolver lin_solver(op);
+   lin_solver.Mult(load, x);
    GLVis glvis("localhost", 19916);
    glvis.Append(x, "x", "Rjc");
    glvis.Update();
