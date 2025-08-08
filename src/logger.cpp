@@ -113,6 +113,7 @@ void TableLogger::SaveWhenPrint(std::string filename, std::ios::openmode mode)
 void GLVis::Append(GridFunction &gf, const char window_title[],
                    const char keys[])
 {
+   qfkey_has_Q.Append(false);
    sockets.push_back(std::make_unique<socketstream>(hostname, port, secure));
    socketstream &socket = *sockets.back();
    if (!socket.is_open())
@@ -161,6 +162,12 @@ void GLVis::Append(GridFunction &gf, const char window_title[],
 void GLVis::Append(QuadratureFunction &qf, const char window_title[],
                    const char keys[])
 {
+   bool hasQ=false;
+   for (int i=0; keys[i] != '\0' && keys[i] != '\n'; i++)
+   {
+      if (keys[i] == 'Q') { hasQ=true; break; }
+   }
+   qfkey_has_Q.Append(hasQ);
    sockets.push_back(std::make_unique<socketstream>(hostname, port, secure));
    socketstream &socket = *sockets.back();
    if (!socket.is_open())
@@ -228,6 +235,10 @@ void GLVis::Update()
       else if (qfs[i])
       {
          *sockets[i] << "quadrature\n" << *meshes[i] << *qfs[i];
+         // NOTE: GLVis seems to have a bug with Q key
+         // It does not restore interpolation type after update.
+         // So, we cycle through all interpolation types to restore it.
+         if (qfkey_has_Q[i]) { *sockets[i] << "keys QQQ\n"; }
       }
       else
       {

@@ -57,6 +57,7 @@ class GLVis
    // Array<mfem::socketstream *> sockets;
    Array<mfem::GridFunction *> gfs;
    Array<mfem::QuadratureFunction *> qfs;
+   Array<bool> qfkey_has_Q;
    Array<Mesh *> meshes;
    Array<bool> parallel;
    const char *hostname;
