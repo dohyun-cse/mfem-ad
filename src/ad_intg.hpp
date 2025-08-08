@@ -4,6 +4,66 @@
 
 namespace mfem
 {
+inline void MyAddMultABt(const DenseMatrix &A, const DenseMatrix &B,
+                         DenseMatrix &ABt)
+{
+#ifdef MFEM_DEBUG
+   if (A.Height() != ABt.Height() || B.Height() != ABt.Width() ||
+       A.Width() != B.Width())
+   {
+      out << A.Height() << "x" << A.Width() << " * "
+          << B.Height() << "x" << B.Width() << " != "
+          << ABt.Height() << "x" << ABt.Width() << std::endl;
+      mfem_error("AddMultABt(...): dimension mismatch");
+   }
+#endif
+
+#ifdef MFEM_USE_LAPACK
+   static char transa = 'N', transb = 'T';
+   static real_t alpha = 1.0, beta = 1.0;
+   int m = A.Height(), n = B.Height(), k = A.Width();
+
+   MFEM_LAPACK_PREFIX(gemm_)(&transa, &transb, &m, &n, &k, &alpha, A.Data(), &m,
+                             B.Data(), &n, &beta, ABt.Data(), &m);
+#elif 1
+   const int ah = A.Height();
+   const int bh = B.Height();
+   const int aw = A.Width();
+   const real_t *ad = A.Data();
+   const real_t *bd = B.Data();
+   real_t *cd = ABt.Data();
+
+   for (int k = 0; k < aw; k++)
+   {
+      real_t *cp = cd;
+      for (int j = 0; j < bh; j++)
+      {
+         const real_t bjk = bd[j];
+         for (int i = 0; i < ah; i++)
+         {
+            cp[i] += ad[i] * bjk;
+         }
+         cp += ah;
+      }
+      ad += ah;
+      bd += bh;
+   }
+#else
+   int i, j, k;
+   real_t d;
+
+   for (i = 0; i < A.Height(); i++)
+      for (j = 0; j < B.Height(); j++)
+      {
+         d = 0.0;
+         for (k = 0; k < A.Width(); k++)
+         {
+            d += A(i, k) * B(j, k);
+         }
+         ABt(i, j) += d;
+      }
+#endif
+}
 
 template <ADEval mode>
 inline int ADNonlinearFormIntegrator<mode>::InitInputShapes(
@@ -101,10 +161,10 @@ real_t ADNonlinearFormIntegrator<mode>::GetElementEnergy(
    const Vector &elfun)
 {
    const int dof = el.GetDof();
-   const int order = el.GetOrder();
-
-   const int sdim = Tr.GetSpaceDim();
-   const int dim = el.GetDim();
+   const int vdim = elfun.Size() / dof;
+   MFEM_ASSERT(vdim == 1 ? true : hasFlag(mode, ADEval::VECTOR),
+               "ADNonlinearFormIntegrator: "
+               "vdim must be 1 or the mode must be VECTOR");
 
    real_t energy = 0.0;
 
@@ -146,10 +206,10 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
    const Vector &elfun, Vector &elvect)
 {
    const int dof = el.GetDof();
-   const int order = el.GetOrder();
-
-   const int sdim = Tr.GetSpaceDim();
-   const int dim = el.GetDim();
+   const int vdim = elfun.Size() / dof;
+   MFEM_ASSERT(vdim == 1 ? true : hasFlag(mode, ADEval::VECTOR),
+               "ADNonlinearFormIntegrator: "
+               "vdim must be 1 or the mode must be VECTOR");
 
    real_t w;
    elvect.SetSize(dof*vdim);
@@ -204,10 +264,10 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
    const Vector &elfun, DenseMatrix &elmat)
 {
    const int dof = el.GetDof();
-   const int order = el.GetOrder();
-
-   const int sdim = Tr.GetSpaceDim();
-   const int dim = el.GetDim();
+   const int vdim = elfun.Size() / dof;
+   MFEM_ASSERT(vdim == 1 ? true : hasFlag(mode, ADEval::VECTOR),
+               "ADNonlinearFormIntegrator: "
+               "vdim must be 1 or the mode must be VECTOR");
 
    real_t w;
    elmat.SetSize(dof*vdim);
@@ -421,10 +481,12 @@ real_t ADBlockNonlinearFormIntegrator<modes...>::GetElementEnergy(
    {
       dof[i] = el[i]->GetDof();
       order[i] = el[i]->GetOrder();
-   }
+      vdim[i] = elfun[i]->Size() / dof[i];
 
-   const int sdim = Tr.GetSpaceDim();
-   const int dim = el[0]->GetDim();
+      MFEM_ASSERT(vdim[i] == 1 ? true : hasFlag(modes_arr[i], ADEval::VECTOR),
+                  "ADNonlinearFormIntegrator: "
+                  "vdim must be 1 or the mode must be VECTOR");
+   }
 
    real_t energy = 0.0;
 
@@ -484,13 +546,13 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementVector(
    {
       dof[i] = el[i]->GetDof();
       order[i] = el[i]->GetOrder();
-   }
+      vdim[i] = elfun[i]->Size() / dof[i];
 
-   const int sdim = Tr.GetSpaceDim();
-   const int dim = el[0]->GetDim();
-   for (int i=0; i<numSpaces; i++)
-   {
-      elvect[i]->SetSize(dof[i]*vdim[i]);
+      MFEM_ASSERT(vdim[i] == 1 ? true : hasFlag(modes_arr[i], ADEval::VECTOR),
+                  "ADNonlinearFormIntegrator: "
+                  "vdim must be 1 or the mode must be VECTOR");
+
+      elvect[i]->SetSize(elfun[i]->Size());
       *elvect[i] = 0.0;
    }
 
@@ -545,6 +607,7 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementVector(
       {
          if constexpr (hasFlag(modes_arr[vi], ADEval::VECTOR))
          {
+            elvectmat[vi].UseExternalData(elvect[vi]->GetData(), dof[vi], vdim[vi]);
             AddMult(allshapes[vi], jacVarMat[vi], elvectmat[vi]);
          }
          else
@@ -572,27 +635,29 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementGrad(
    {
       dof[i] = el[i]->GetDof();
       order[i] = el[i]->GetOrder();
+      vdim[i] = elfun[i]->Size() / dof[i];
+
+      MFEM_ASSERT(vdim[i] == 1 ? true : hasFlag(modes_arr[i], ADEval::VECTOR),
+                  "ADNonlinearFormIntegrator: "
+                  "vdim must be 1 or the mode must be VECTOR");
    }
 
-   const int sdim = Tr.GetSpaceDim();
-   const int dim = el[0]->GetDim();
    for (int j=0; j<numSpaces; j++)
    {
       for (int i=0; i<numSpaces; i++)
       {
-         elmat(i,j)->SetSize(dof[i]*vdim[i], dof[j]*vdim[j]);
+         elmat(i,j)->SetSize(elfun[i]->Size(),
+                             elfun[j]->Size());
          *elmat(i,j) = 0.0;
       }
    }
 
    std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes));
-   Array<int> x_idx(numSpaces+1), H_idx(numSpaces+1);
+   Array<int> x_idx(numSpaces+1);
    x_idx[0] = 0;
-   H_idx[0] = 0;
    for (int i=0; i<numSpaces; i++)
    {
       x_idx[i+1] = shapedim[i]*vdim[i];
-      H_idx[i+1] = shapedim[i]*vdim[i]*vdim[i];
    }
    x_idx.PartialSum();
    x.SetSize(f.n_input);
@@ -636,19 +701,28 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementGrad(
       {
          _constexpr_for([&](auto test_i)
          {
+            // out << "(" << trial_i << ", " << test_i << ")"
+                // << std::endl;
+            const int tr_vdim = vdim[trial_i];
+            const int ts_vdim = vdim[test_i];
             H.GetSubMatrix(x_idx[test_i], x_idx[test_i+1], x_idx[trial_i], x_idx[trial_i+1],
                            Hsub);
-            Hsub.SetSize(shapedim[test_i], vdim[test_i]*vdim[trial_i]*shapedim[trial_i]);
-            Hx.SetSize(dof[test_i], vdim[test_i]*vdim[trial_i]*shapedim[trial_i]);
+            // out << "I'm here" << std::endl;
+            Hsub.SetSize(shapedim[test_i], ts_vdim*tr_vdim*shapedim[trial_i]);
+            Hx.SetSize(dof[test_i], ts_vdim*tr_vdim*shapedim[trial_i]);
             Mult(allshapes[test_i], Hsub, Hx);
-            if constexpr (hasFlag(modes_arr[test_i], ADEval::VECTOR))
+            Hx.SetSize(dof[test_i]*ts_vdim, tr_vdim*shapedim[trial_i]);
+            const int h = dof[test_i]*ts_vdim;
+            const int w = shapedim[trial_i];
+            const int wout = dof[trial_i];
+            for (int d=0; d<tr_vdim; d++)
             {
-               MFEM_ABORT("NOT YET IMPLEMENTED");
+               Hxsub.UseExternalData(Hx.GetData() + d*(w*h), h, w);
+               partelmat[trial_i].UseExternalData(elmat(test_i, trial_i)->GetData() + d*wout*h,
+                                                  h, wout);
+               MyAddMultABt(Hxsub, allshapes[trial_i], partelmat[trial_i]);
             }
-            else
-            {
-               AddMultABt(Hx, allshapes[trial_i], *elmat(test_i, trial_i));
-            }
+            // out << "One done" << std::endl;
          }, std::make_index_sequence<sizeof...(modes)> {});
       }, std::make_index_sequence<sizeof...(modes)> {});
    }

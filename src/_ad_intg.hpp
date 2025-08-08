@@ -72,12 +72,11 @@ template <ADEval mode>
 class ADNonlinearFormIntegrator : public NonlinearFormIntegrator
 {
    static_assert(isValidADEval<mode>(),
-              "ADNonlinearFormIntegrator: Invalid ADEval mode");
+                 "ADNonlinearFormIntegrator: Invalid ADEval mode");
 protected:
    ADFunction &f;
 
 private:
-   int vdim;
    Vector x, jac;
    DenseMatrix H, Hx;
 
@@ -95,10 +94,7 @@ private:
    // DenseMatrix d2shape, d2shape1, d2shape2; // for hessian. Not implemented yet.
 public:
    ADNonlinearFormIntegrator(ADFunction &f, IntegrationRule *ir = nullptr)
-      : NonlinearFormIntegrator(ir), f(f), vdim(1) {}
-   ADNonlinearFormIntegrator(ADFunction &f, int vdim,
-                             IntegrationRule *ir = nullptr)
-      : NonlinearFormIntegrator(ir), f(f), vdim(vdim) {}
+      : NonlinearFormIntegrator(ir), f(f) {}
 
    const IntegrationRule* GetDefaultIntegrationRule(
       const FiniteElement& trial_fe, const FiniteElement& test_fe,
@@ -145,14 +141,14 @@ protected:
    // and make value_shapes and grad_shapes reference to
    // allshapes.
    inline int InitInputShapes(const FiniteElement &el,
-                                     ElementTransformation &Tr,
-                                     DenseMatrix &shapes);
+                              ElementTransformation &Tr,
+                              DenseMatrix &shapes);
 
    // Calculate parameter, shape, dshape at the given integration point
    inline void CalcInputShapes(const FiniteElement &el,
-                                      ElementTransformation &Tr,
-                                      const IntegrationPoint &ip,
-                                      DenseMatrix &shapes);
+                               ElementTransformation &Tr,
+                               const IntegrationPoint &ip,
+                               DenseMatrix &shapes);
    template <ADEval... modes>
    friend class ADBlockNonlinearFormIntegrator;
 private:
@@ -225,11 +221,6 @@ public:
                                   const IntegrationRule *ir = nullptr)
       : ADBlockNonlinearFormIntegrator(f, ir), vdim(vdim)
    {}
-
-   ADBlockNonlinearFormIntegrator(ADFunction &f, const Array<int> &vdim,
-                                  const IntegrationRule *ir = nullptr)
-      : ADBlockNonlinearFormIntegrator(f, ir)
-   { this->vdim = vdim; }
 
    virtual void SetIntRule(const IntegrationRule *ir)
    { IntRule = ir; }
@@ -322,9 +313,9 @@ protected:
    }
 
    std::array<int, sizeof...(modes)> InitInputShapes(
-                                    const Array<const FiniteElement *>& el,
-                                    ElementTransformation &Tr,
-                                    std::vector<DenseMatrix> &shapes);
+                             const Array<const FiniteElement *>& el,
+                             ElementTransformation &Tr,
+                             std::vector<DenseMatrix> &shapes);
 
    void CalcInputShapes(
       const Array<const FiniteElement *>& el,

@@ -386,8 +386,8 @@ struct HellingerEntropy : public ADEntropy
    Coefficient &bound;
    mutable real_t scale;
 
-   HellingerEntropy(Coefficient &bound)
-      : ADEntropy(1), bound(bound)
+   HellingerEntropy(int dim, Coefficient &bound)
+      : ADEntropy(dim), bound(bound)
    { }
    void ProcessParameters(ElementTransformation &Tr,
                           const IntegrationPoint &ip) const override
