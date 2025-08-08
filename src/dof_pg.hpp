@@ -33,16 +33,16 @@ real_t ADDofPGNonlinearFormIntegrator<modes...>::GetElementEnergy(
    real_t energy = ADBlockNonlinearFormIntegrator<modes...>::GetElementEnergy(
                       primal_el, Tr, primal_elfun);
    Vector x(2), primal_x(x, 0, 1), dual_x(x, 1, 1);
-   Vector latent_k_val;
+   Vector dual_val_k;
    real_t pg_energy = 0.0;
    for (int i=0; i<entropies.size(); i++)
    {
-      GridFunction &dual_val_k = pg_functional.GetPrevLatent(i);
+      GridFunction &dual_val_k_gf = pg_functional.GetPrevLatent(i);
       auto &primal_fe = *primal_el[i];
       auto &dual_fe = *dual_el[i];
       auto &primal_val = *primal_elfun[i];
       auto &dual_val = *dual_elfun[i];
-      dual_val_k.GetElementDofValues(Tr.ElementNo, latent_k_val);
+      dual_val_k_gf.GetElementDofValues(Tr.ElementNo, dual_val_k);
       MFEM_ASSERT(primal_fe.GetDof() == dual_fe.GetDof(),
                   "ADDofPGNonlinearFormIntegrator: "
                   "primal and dual finite elements must have the same number of dofs");
@@ -142,25 +142,26 @@ void ADDofPGNonlinearFormIntegrator<modes...>::AssembleElementGrad(
    real_t alpha = pg_functional.GetAlpha();
    Array<const FiniteElement*> primal_el;
    Array<const Vector*> primal_elfun;
-   Array<DenseMatrix*> primal_elmat;
+   Array2D<DenseMatrix*> primal_elmat(numSpaces, numSpaces);
    Array<const FiniteElement*> dual_el;
    Array<const Vector*> dual_elfun;
    Array<DenseMatrix*> dual_elmat;
    Array<DenseMatrix*> upper_mat;
    Array<DenseMatrix*> lower_mat;
-   for (int i = 0; i < numSpaces; i++)
+   for (int j = 0; j < numSpaces; j++)
    {
-      primal_el.Append(el[i]);
-      primal_elfun.Append(elfun[i]);
-      primal_elmat.Append(elmat(i,i));
+      primal_el.Append(el[j]);
+      primal_elfun.Append(elfun[j]);
+      for (int i=0; i<numSpaces; i++)
+      {
+         primal_elmat(i,j) = elmat(i,j);
+      }
    }
    for (int i = numSpaces; i < el.Size(); i++)
    {
       dual_el.Append(el[i]);
       dual_elfun.Append(elfun[i]);
       dual_elmat.Append(elmat(i,i));
-      dual_elmat.Last()->SetSize(el[i]->GetDof());
-      (*dual_elmat.Last()) = 0.0;
    }
    for (int i=0; i<numSpaces; i++)
    {
@@ -176,14 +177,20 @@ void ADDofPGNonlinearFormIntegrator<modes...>::AssembleElementGrad(
       for (int j=0; j<numSpaces; j++)
       {
          if (i==j) { continue; }
-         elmat(i, j+numSpaces)->SetSize(elfun[i]->Size());
+         elmat(i + numSpaces, j + numSpaces)->SetSize(elfun[i]->Size(),
+               elfun[j]->Size());
+         (*elmat(i + numSpaces, j + numSpaces)) = 0.0;
+         elmat(j + numSpaces, i + numSpaces)->SetSize(elfun[j]->Size(),
+               elfun[i]->Size());
+         (*elmat(j + numSpaces, i + numSpaces)) = 0.0;
+         elmat(i, j+numSpaces)->SetSize(elfun[i]->Size(), elfun[j]->Size());
          (*elmat(i, j+numSpaces)) = 0.0;
-         elmat(i+numSpaces, j)->SetSize(elfun[j]->Size());
+         elmat(i+numSpaces, j)->SetSize(elfun[i]->Size(), elfun[j]->Size());
          (*elmat(j+numSpaces, i)) = 0.0;
       }
    }
 
-   ADBlockNonlinearFormIntegrator<modes...>::AssembleElementVector(
+   ADBlockNonlinearFormIntegrator<modes...>::AssembleElementGrad(
       primal_el, Tr, primal_elfun, primal_elmat);
    Vector x(2), primal_x(x, 0, 1), dual_x(x, 1, 1);
    DenseMatrix H(1);
@@ -195,21 +202,25 @@ void ADDofPGNonlinearFormIntegrator<modes...>::AssembleElementGrad(
       GridFunction &dual_val_k = pg_functional.GetPrevLatent(i);
       auto &primal_fe = *primal_el[i];
       auto &dual_fe = *dual_el[i];
-      auto &primal_val = *primal_elfun[i];
       auto &dual_val = *dual_elfun[i];
       dual_val_k.GetElementDofValues(Tr.ElementNo, latent_k_val);
       MFEM_ASSERT(primal_fe.GetDof() == dual_fe.GetDof(),
                   "ADDofPGNonlinearFormIntegrator: "
                   "primal and dual finite elements must have the same number of dofs");
-      const IntegrationRule &ir = primal_fe.GetNodes();
-      dual_elmat[i]->SetSize(ir.GetNPoints());
-      for (int j=0; j<ir.GetNPoints(); j++)
+      const IntegrationRule &nodes = primal_fe.GetNodes();
+      dual_elmat[i]->SetSize(nodes.GetNPoints());
+      (*dual_elmat[i]) = 0.0;
+      lower_mat[i]->SetSize(nodes.GetNPoints());
+      (*lower_mat[i]) = 0.0;
+      upper_mat[i]->SetSize(nodes.GetNPoints());
+      (*upper_mat[i]) = 0.0;
+      for (int j=0; j<nodes.GetNPoints(); j++)
       {
-         const IntegrationPoint &ip = ir.IntPoint(j);
+         const IntegrationPoint &ip = nodes.IntPoint(j);
          Tr.SetIntPoint(&ip);
          w = Tr.Weight()*ip.weight/alpha;
+         entropies[i]->ProcessParameters(Tr, ip);
 
-         primal_x[0] = (*primal_elfun[i])[j];
          dual_x[0] = (*dual_elfun[i])[j];
          entropies[i]->Hessian(dual_x, H);
          (*dual_elmat[i])(j,j) = -H(0,0)*w;
