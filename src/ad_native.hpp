@@ -504,6 +504,130 @@ struct LinearElasticityEnergy : public ADFunction
       return 0.5*lambda*divnorm + mu*h1_norm;
    });
 };
+// Lagrangian functional
+// f(x) + sum lambda[i]*c[i](x)
+struct Lagrangian : public ADFunction
+{
+private:
+   enum { OBJONLY=-2, FULL=-1, CON=0};
+   int eval_mode =
+      FULL; // -2: objective, -1: full Lagrangian, >=0: constraint comp
+
+   ADFunction &objective; // f(x)
+
+   std::vector<ADFunction*> eq_con; // c[i](x)
+   Vector eq_rhs; // c[i](x) = con_target[i]
+public:
+
+   Lagrangian(ADFunction &objective)
+      : ADFunction(objective.n_input)
+      , objective(objective)
+   {}
+
+   Lagrangian AddEqConstraint(ADFunction &constraint,
+                              real_t target = 0.0);
+   Lagrangian SetEqRHS(int idx, real_t target) { eq_rhs[idx] = target; return *this; }
+
+   // return f(x) + sum lambda[i]*c[i](x)
+   void FullMode() { this->eval_mode = FULL; }
+   // return f(x)
+   void ObjectiveMode() { this->eval_mode = OBJONLY; }
+   // return c[i](x)
+   void EqConstraintMode(int comp)
+   {
+      MFEM_VERIFY(comp >= 0 && comp < eq_con.size(),
+                  "ALFunctional: comp must be in [0, n_input)");
+      this->eval_mode = comp;
+   }
+
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override;
+
+   AD_IMPL(T, V, M, x_and_lambda,
+   {
+      const V x(x_and_lambda.GetData(), objective.n_input);
+      const V lambda(x_and_lambda.GetData() + objective.n_input,
+                     eq_con.size());
+      if (eval_mode >= 0) { return (*eq_con[eval_mode])(x); }
+
+      T result = objective(x);
+      if (eval_mode == OBJONLY) { return result; } // only objective
+      for (int i=0; i<eq_con.size(); i++) { result += (*eq_con[i])(x)*lambda[i]; }
+      return result;
+   });
+
+private:
+};
+
+// Augmented Lagrangian functional
+struct ALFunctional : public ADFunction
+{
+private:
+   enum { OBJONLY=-2, FULLAL=-1, CON=0};
+   int al_eval_mode = FULLAL; // -2: objective, -1: full AL, >=0: constraint comp
+
+   ADFunction &objective; // f(x)
+
+   std::vector<ADFunction*> eq_con; // c[i](x)
+   Vector eq_rhs; // c[i](x) = con_target[i]
+   Vector lambda; // Lagrange multipliers
+   real_t penalty=1.0; // penalty
+public:
+
+   ALFunctional(ADFunction &objective)
+      : ADFunction(objective.n_input)
+      , objective(objective)
+   {}
+
+   ALFunctional AddEqConstraint(ADFunction &constraint,
+                                real_t target = 0.0);
+   ALFunctional SetEqRHS(int idx, real_t target) { eq_rhs[idx] = target; return *this; }
+
+   void SetLambda(const Vector &lambda);
+   const Vector &GetLambda() const { return lambda; }
+   Vector &GetLambda() { return lambda; }
+
+   void SetPenalty(real_t mu);
+   real_t GetPenalty() const {return penalty; }
+   real_t &GetPenalty() { return penalty; }
+
+   // Full AL mode: f(x) + sum lambda[i]*c[i](x) + mu/2 * sum c[i](x)^2
+   void ALMode() { this->al_eval_mode = FULLAL; }
+   // Objective mode: f(x)
+   void ObjectiveMode() { this->al_eval_mode = OBJONLY; }
+   // Constraint mode: c[i](x)
+   void EqConstraintMode(int comp)
+   {
+      MFEM_VERIFY(comp >= 0 && comp < eq_con.size(),
+                  "ALFunctional: comp must be in [0, n_input)");
+      this->al_eval_mode = comp;
+   }
+
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override;
+
+   AD_IMPL(T, V, M, x,
+   {
+      if (al_eval_mode >= 0) { return evalAL<T>(x, al_eval_mode); }
+
+      T result = objective(x);
+      if (al_eval_mode == OBJONLY) { return result; } // only objective
+
+      for (int i=0; i<eq_con.size(); i++) { result += evalAL<T>(x, i); }
+
+      return result;
+   });
+
+private:
+   // Evaluate lambda*c(x) + (mu/2)*c(x)^2
+   template <typename T, typename V>
+   T evalAL(V &x, int idx) const
+   {
+      T cx = (*eq_con[idx])(x) - eq_rhs[idx];
+      if (al_eval_mode >= 0) { return cx; } // if non-negative, only c(x)
+      return cx*(lambda[idx] + penalty*0.5*cx);
+   }
+};
 // ----------------------------------------------------------------
 // Operator overloading for ADFunction arithmetics
 // Using shared_ptr to manage memory.

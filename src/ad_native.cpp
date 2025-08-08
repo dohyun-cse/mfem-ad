@@ -178,4 +178,55 @@ void DifferentiableCoefficient::EvalInput(ElementTransformation &T,
    }
 }
 
+Lagrangian Lagrangian::AddEqConstraint(ADFunction &constraint,
+                                       real_t target)
+{
+   n_input++;
+   eq_con.push_back(&constraint);
+   int numCon = eq_con.size();
+   eq_rhs.SetSize(numCon);
+   eq_rhs[numCon - 1] = target;
+   return *this;
+}
+
+void Lagrangian::ProcessParameters(ElementTransformation &Tr,
+                                   const IntegrationPoint &ip) const
+{
+   objective.ProcessParameters(Tr, ip);
+   for (auto *con : eq_con) { con->ProcessParameters(Tr, ip); }
+}
+
+ALFunctional ALFunctional::AddEqConstraint(ADFunction &constraint,
+      real_t target)
+{
+   eq_con.push_back(&constraint);
+   int numCon = eq_con.size();
+   eq_rhs.SetSize(numCon);
+   lambda.SetSize(numCon);
+
+   eq_rhs[numCon - 1] = target;
+   lambda[numCon - 1] = 0.0;
+   return *this;
+}
+
+void ALFunctional::SetLambda(const Vector &lambda)
+{
+   MFEM_VERIFY(lambda.Size() == this->lambda.Size(),
+               "ALFunctional: lambda size mismatch");
+   this->lambda = lambda;
+}
+
+void ALFunctional::SetPenalty(real_t mu)
+{
+   MFEM_VERIFY(mu >= 0.0, "ALFunctional: mu must be non-negative");
+   this->penalty = mu;
+}
+
+void ALFunctional::ProcessParameters(ElementTransformation &Tr,
+                                     const IntegrationPoint &ip) const
+{
+   objective.ProcessParameters(Tr, ip);
+   for (auto *con : eq_con) { con->ProcessParameters(Tr, ip); }
+}
+
 } // namespace mfem
