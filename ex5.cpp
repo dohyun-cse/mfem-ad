@@ -72,6 +72,7 @@ struct RemapALFunctional : public ADFunction
    InternalEnergyFunctional internal_energy;
    TotalEnergyFunctional total_energy;
    MomentumFunctional momentum[3];
+   std::vector<ADFunction*> constraints;
    Vector con_target; // will be divided by domain volume as this is point-functional
    const Vector &lambda;
    const real_t &mu;
@@ -92,7 +93,19 @@ struct RemapALFunctional : public ADFunction
       , con_target(con_target)
       , lambda(lambda)
       , mu(mu)
-   { con_target *= 1.0 / domain_volume; }
+   {
+      if (opt_type >= 0) { constraints.push_back(&volume); }
+      if (opt_type >= 1) { constraints.push_back(&mass); }
+      if (opt_type == 2) { constraints.push_back(&internal_energy); }
+      else if (opt_type > 2) { constraints.push_back(&total_energy); }
+      if (opt_type == 3)
+      {
+         if (dim >= 1) { constraints.push_back(&momentum[0]); }
+         if (dim >= 2) { constraints.push_back(&momentum[1]); }
+         if (dim >= 3) { constraints.push_back(&momentum[2]); }
+      }
+      con_target *= 1.0 / domain_volume;
+   }
 
    void SetTarget(Vector &con_target)
    {
@@ -124,40 +137,24 @@ struct RemapALFunctional : public ADFunction
 
    // Evaluate lambda*c(x) + (mu/2)*c(x)^2
    template <typename T, typename V>
-   T evalAL(const ADFunction &c, V &x, int idx) const
+   T evalAL(V &x, int idx) const
    {
-      T cx = c(x) - con_target[idx];
+      T cx = (*constraints[idx])(x) - con_target[idx];
       if (al_eval_mode > 0) { return cx; }
       return cx*(lambda[idx] + mu*0.5*cx);
    }
 
    AD_IMPL(T, V, M, x,
    {
-      if (al_eval_mode > 0)
+      if (int comp = al_eval_mode > 0)
       {
-         switch (al_eval_mode - 1)
-         {
-            case 0: return evalAL<T>(volume, x, 0);
-            case 1: return evalAL<T>(mass, x, 1);
-            case 2:
-               if (opt_type == 2) { return evalAL<T>(internal_energy, x, 2); }
-               else { return evalAL<T>(total_energy, x, 2); }
-            case 3: return evalAL<T>(momentum[0], x, 3);
-            case 4: return evalAL<T>(momentum[1], x, 4);
-            case 5: return evalAL<T>(momentum[2], x, 5);
-            default:
-               MFEM_ABORT("RemapALFunctional: comp must be in [0, n_input)");
-         }
+         return evalAL<T>(x, comp);
       }
       T result = l2_diff_sqrd(x); // (1/2)*||x-x0||^2
       if (al_eval_mode == 0) { return result; }
-      if constexpr (opt_type >= 0) { result += evalAL<T>(volume, x, 0); }
-      if constexpr (opt_type >= 1) { result += evalAL<T>(mass, x, 1); }
-      if constexpr (opt_type == 2) { result += evalAL<T>(internal_energy, x, 2); }
-      else if constexpr (opt_type > 2) { result += evalAL<T>(total_energy, x, 2); }
-      if constexpr (opt_type == 3)
+      for (int i = 0; i < constraints.size(); i++)
       {
-         for (int i=0; i<dim; i++) { result += evalAL<T>(momentum[i], x, 3 + i); }
+         result += evalAL<T>(x, i);
       }
       return result;
    });
@@ -249,8 +246,7 @@ int main(int argc, char *argv[])
 
       x0[i] = std::make_unique<ParGridFunction>(fes);
       x0[i]->MakeTRef(fespaces[i], x0_vec, offsets[i]);
-      x0[i]->Randomize();
-      (*x0[i]) *= 1e-04;
+      (*x0[i]) = 0.5;
       x0[i]->SetTrueVector();
       latent_k[i] = std::make_unique<ParGridFunction>(fes);
       latent_k[i]->MakeTRef(fespaces[i], latent_k_vec, offsets[i]);
@@ -319,7 +315,7 @@ int main(int argc, char *argv[])
    solver.SetSolver(lin_solver);
    solver.SetOperator(bnlf);
    IterativeSolver::PrintLevel print_level;
-   print_level.Summary();
+   print_level.Iterations().Summary();
    solver.SetPrintLevel(print_level);
    solver.SetAbsTol(1e-09);
    solver.SetRelTol(0.0);
@@ -360,13 +356,16 @@ int main(int argc, char *argv[])
             x[i]->SetFromTrueVector();
             latent[i]->SetFromTrueVector();
          }
+         out << "    lambda = ";
          for (int i=0; i<numVars; i++)
          {
             AL_functional.ConstraintMode(i);
             real_t cval = bnlf.GetEnergy(x_and_psi);
             out << "    Constraint " << i << " : " << cval << std::endl;
             lambda[i] += mu*cval;
+            out << lambda[i] << ", ";
          }
+         out << std::endl;
       }
       glvis.Update();
    }
