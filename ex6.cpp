@@ -1,4 +1,4 @@
-/// Example 6: Advection-Diffusion problem
+/// Example 6: AD Diffusion
 #include "mfem.hpp"
 #include <fstream>
 #include <iostream>
@@ -11,27 +11,24 @@
 using namespace std;
 using namespace mfem;
 
-struct MixedDiffusionFunctional : public ADFunction
+struct DamProblem2D : public ADVectorFunction
 {
-public:
-   MixedDiffusionFunctional(int dim)
-      : ADFunction(dim + 1 + 1) // q, div q, u
-   {}
-
-   AD_IMPL(T, V, M, q_divq_u,
+   real_t slope;
+   DamProblem2D(real_t a, real_t y)
+      : ADVectorFunction(3, 3)
    {
-      const T* q_divq_u_data = q_divq_u.GetData();
-      const int dim = q_divq_u.Size() - 2;
-      const T* q = q_divq_u_data;
-      const T& div_q = *(q_divq_u_data + dim);
-      const T& u = *(q_divq_u_data + dim + 1);
-      T result = T();
-      for (int i=0; i<dim; i++)
-      {
-         result += q[i]*q[i];
-      }
-      result = result*0.5 - u*div_q;
-      return result;
+      MFEM_VERIFY(a > 0 && y >= 0,
+                  "DamProblem2D: a must be positive and y must be non-negative");
+      slope = a / y; // slope of the dam
+   }
+
+   AD_VEC_IMPL(T, V, M, u_gradu, F,
+   {
+      const T* gradu = &u_gradu[1];
+      F.SetSize(3);
+      F[0] = 0; // value of u. No gradient
+      F[1] = gradu[0] - slope*gradu[1];
+      F[2] = gradu[1] + slope*gradu[0];
    });
 };
 
@@ -44,7 +41,7 @@ int main(int argc, char *argv[])
    MPI_Comm comm = MPI_COMM_WORLD;
    // file name to be saved
    std::stringstream filename;
-   filename << "ad-mixed-diffusion-";
+   filename << "ad-dam-";
 
    int order = 1;
    int ref_levels = 3;
@@ -63,61 +60,58 @@ int main(int argc, char *argv[])
                   "Enable Paraview Export. Default is false");
    args.ParseCheck();
 
-   // Mesh mesh = rhs_fun_circle
-   Mesh ser_mesh = Mesh::MakeCartesian2D(10, 10,
-                                         Element::QUADRILATERAL);
+   Mesh ser_mesh("./data/sloped_rectangle.mesh");
    const int dim = ser_mesh.Dimension();
    for (int i = 0; i < ref_levels; i++)
    {
       ser_mesh.UniformRefinement();
    }
    ParMesh mesh(comm, ser_mesh);
-   // Setup boundary conditions. All Dirichlet boundary conditions
-   // -> Weakly imposed
-   int num_bdr_attr = mesh.bdr_attributes.Max();
-   Array<int> is_bdr_ess_q(num_bdr_attr);
-   is_bdr_ess_q = 0;
-   Array<int> is_bdr_ess_u(num_bdr_attr);
-   is_bdr_ess_u = 0;
-   Array<Array<int>*> is_bdr_ess{&is_bdr_ess_q, &is_bdr_ess_u};
-   // RHS
    FunctionCoefficient load_cf([](const Vector &x)
    {
-      return 2*M_PI * M_PI * std::sin(M_PI * x(0)) * std::sin(M_PI * x(1));
+      return 1.0;
    });
 
-   RT_FECollection q_fec(order, dim);
-   L2_FECollection u_fec(order, dim);
-   L2_FECollection latent_fec(order-1, dim);
-   ParFiniteElementSpace q_fes(&mesh, &q_fec);
-   ParFiniteElementSpace u_fes(&mesh, &u_fec);
-   Array<ParFiniteElementSpace*> fespaces{&q_fes, &u_fes};
-   Array<int> offsets = GetOffsets(fespaces);
-   Array<int> true_offsets = GetTrueOffsets(fespaces);
-   BlockVector x(offsets), b(offsets);
-   BlockVector tx(true_offsets), tb(true_offsets);
-   x = 0.0;
-   ParGridFunction q(&q_fes, x, offsets[0]), u(&u_fes, x, offsets[1]);
-   q.MakeTRef(&q_fes, tx.GetBlock(0).GetData());
-   u.MakeTRef(&u_fes, tx.GetBlock(1).GetData());
-   ParLinearForm load(&u_fes, b.GetBlock(1).GetData());
-   load.AddDomainIntegrator(new DomainLFIntegrator(load_cf));
-   load.Assemble();
-   load.ParallelAssemble(tb.GetBlock(1));
-   tb.GetBlock(1).Neg(); // energy functional changes the sign
+   H1_FECollection h1_fec(order+1, dim);
+   L2_FECollection l2_fec(order-1, dim);
+   ParFiniteElementSpace h1_fes(&mesh, &h1_fec);
+   ParFiniteElementSpace l2_fes(&mesh, &l2_fec);
+   Array<ParFiniteElementSpace*> fespaces{&h1_fes, &l2_fes};
 
-   MixedDiffusionFunctional energy(dim);
-   // FermiDiracEntropy entropy(0.0, 1.0);
-   // ADPGFunctional pg_functional(energy, entropy, dim+1);
+   const int numBdrAttr = mesh.bdr_attributes.Max();
+   Array<int> is_bdr_ess_u(numBdrAttr), is_bdr_ess_psi(numBdrAttr);
+   is_bdr_ess_u = 1; is_bdr_ess_psi = 0;
+   Array<Array<int>*> is_bdr_ess{&is_bdr_ess_u, &is_bdr_ess_psi};
+
+   DamProblem2D obj_functional(1.0, 1.0);
+   ConstantCoefficient lower_bound(0.0);
+   ShannonEntropy entropy(lower_bound);
+   ADPGFunctional pg_functional(obj_functional, entropy);
 
    ParBlockNonlinearForm nlf(fespaces);
-   constexpr auto q_mode = ADEval::VALUE | ADEval::DIV | ADEval::VECFE;
-   constexpr auto u_mode = ADEval::VALUE;
    nlf.AddDomainIntegrator(new
-                           ADBlockNonlinearFormIntegrator<q_mode, u_mode>
-                           (energy));
-   Array<Vector*> dummies(2);
-   nlf.SetEssentialBC(is_bdr_ess, dummies);
+                           ADBlockNonlinearFormIntegrator<ADEval::GRAD | ADEval::VALUE, ADEval::VALUE>
+                           (pg_functional));
+
+   Array<int> offsets = GetOffsets(fespaces);
+   Array<int> toffsets = GetTrueOffsets(fespaces);
+   BlockVector x(offsets), b(offsets);
+   BlockVector tx(toffsets), tb(toffsets);
+   tx = 0.0; tb = 0.0;
+
+   ParGridFunction u(&h1_fes, x, offsets[0]), psi(&l2_fes, x, offsets[1]),
+                   psi_k(&l2_fes);
+   u.MakeTRef(&h1_fes, x, offsets[0]); psi.MakeTRef(&l2_fes, x, offsets[1]);
+   u.SetFromTrueVector(); psi.SetFromTrueVector();
+   pg_functional.SetPrevLatent(psi_k);
+
+   ParLinearForm load(&h1_fes, b.GetData());
+   load.AddDomainIntegrator(new DomainLFIntegrator(load_cf));
+   load.Assemble();
+   load.ParallelAssemble(tb.GetBlock(0));
+
+   Array<Vector*> rhs({&tb.GetBlock(0), &tb.GetBlock(1)});
+   nlf.SetEssentialBC(is_bdr_ess, rhs);
 
    NewtonSolver solver(comm);
    MUMPSMonoSolver lin_solver(comm);
@@ -125,18 +119,38 @@ int main(int argc, char *argv[])
    solver.SetOperator(nlf);
    solver.SetAbsTol(1e-10);
    solver.SetRelTol(1e-10);
+   solver.iterative_mode = true;
    IterativeSolver::PrintLevel print_level;
-   print_level.iterations = 1;
+   print_level.iterations = true;
    solver.SetPrintLevel(print_level);
-   solver.SetMaxIter(10);
-   solver.Mult(tb, tx);
-   q.SetFromTrueVector();
-   u.SetFromTrueVector();
+
+   DifferentiableCoefficient entropy_cf(entropy);
+   entropy_cf.AddInput(psi);
+   VectorCoefficient &Upsi_cf = entropy_cf.Gradient();
+
+   QuadratureSpace visspace(&mesh, order+3);
+   QuadratureFunction Upsi(&visspace);
+
+   Upsi_cf.Project(Upsi);
 
    GLVis glvis("localhost", 19916);
-   glvis.Append(q, "q", "Rjc");
    glvis.Append(u, "u", "Rjc");
+   glvis.Append(Upsi, "U(psi)", "Rjc");
    glvis.Update();
+
+   for (int i=0; i<100; i++)
+   {
+      pg_functional.SetAlpha(std::pow(i+1., 2.));
+      psi_k = psi;
+      psi_k.SetTrueVector();
+
+      solver.Mult(tb, tx);
+      u.SetFromTrueVector();
+      psi.SetFromTrueVector();
+      Upsi_cf.Project(Upsi);
+      glvis.Update();
+   }
+
 
    return 0;
 }

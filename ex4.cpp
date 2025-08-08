@@ -113,12 +113,12 @@ int main(int argc, char *argv[])
    offsets.PartialSum();
    BlockVector x_and_psi(offsets);
 
-   ParGridFunction x(&h1_fes), psi(&l2_fes);
+   ParGridFunction u(&h1_fes), psi(&l2_fes);
    ParGridFunction psik(psi);
-   GridFunctionCoefficient psik_cf(&psik);
 
-   x.MakeTRef(&h1_fes, x_and_psi.GetBlock(0).GetData());
-   x = 0.0; x.SetTrueVector();
+   u.MakeTRef(&h1_fes, x_and_psi.GetBlock(0).GetData());
+   u = 0.0; u.SetTrueVector();
+   psi = 0.0; psi.SetTrueVector();
 
    psi.MakeTRef(&l2_fes, x_and_psi.GetBlock(1).GetData());
    psi = 0.0; psi.SetTrueVector();
@@ -169,7 +169,7 @@ int main(int argc, char *argv[])
    solver.iterative_mode = true;
 
    GLVis glvis("localhost", 19916, 400, 350, 2);
-   glvis.Append(x, "x", "Rjclmm");
+   glvis.Append(u, "x", "Rjclmm");
    glvis.Append(x_mapped, "U(psi)", "RjclQmm");
    glvis.Update();
 
@@ -189,7 +189,7 @@ int main(int argc, char *argv[])
          break;
       }
 
-      x.SetFromTrueVector();
+      u.SetFromTrueVector();
       psi.SetFromTrueVector();
       subtract(psi, psik, lambda);
       lambda *= 1.0 / pg_functional.GetAlpha();

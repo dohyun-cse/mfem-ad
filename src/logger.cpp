@@ -144,8 +144,8 @@ void GLVis::Append(GridFunction &gf, const char window_title[],
    {
       socket << "window_title '" << window_title <<"'\n";
    }
-   int row = (sockets.size() - 1) % nrWinPerRow;
-   int col = (sockets.size() - 1) / nrWinPerRow;
+   int row = (sockets.size() - 1) / nrWinPerRow;
+   int col = (sockets.size() - 1) % nrWinPerRow;
    socket << "window_geometry "
           << w*col << " " << h*row << " "
           << w << " " << h << "\n";

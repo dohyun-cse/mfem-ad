@@ -63,19 +63,23 @@ struct ADPGFunctional : public ADFunction
    ADFunction &f;
    std::vector<ADEntropy*> dual_entropy;
    std::vector<int> primal_idx;
+   std::vector<int> dual_idx;
    std::vector<int> entropy_size;
    std::vector<GridFunction*> latent_k_gf;
    mutable std::vector<Vector> latent_k;
+   mutable Vector jac;
+   mutable DenseMatrix hess;
    real_t alpha = 1.0;
    std::unique_ptr<VectorCoefficient> owned_cf;
 
    ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy, int idx=0)
       : ADFunction(f.n_input + dual_entropy.n_input)
-      , f(f), dual_entropy({&dual_entropy})
-   , primal_idx(1)
-   , entropy_size(1)
-   , latent_k_gf(1)
-   , latent_k(1)
+      , f(f), dual_entropy{&dual_entropy}
+      , primal_idx(1)
+      , dual_idx(1)
+      , entropy_size(1)
+      , latent_k_gf(1)
+      , latent_k(1)
    {
       this->primal_idx[0] = idx;
       entropy_size[0] = dual_entropy.n_input;
@@ -84,6 +88,7 @@ struct ADPGFunctional : public ADFunction
                   "primal_begin + dual_entropy.n_input:"
                   << f.n_input << " >= " << n_input);
       latent_k[0].SetSize(entropy_size[0]);
+      dual_idx[0] = f.n_input;
    }
    ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy,
                   GridFunction &latent_k, int idx=0)
@@ -97,6 +102,7 @@ struct ADPGFunctional : public ADFunction
       : ADFunction(f.n_input)
       , f(f), dual_entropy(std::move(dual_entropy_))
       , primal_idx(primal_begin)
+      , dual_idx(dual_entropy.size())
       , entropy_size(dual_entropy.size())
       , latent_k_gf(dual_entropy.size())
       , latent_k(dual_entropy.size())
@@ -113,12 +119,16 @@ struct ADPGFunctional : public ADFunction
       MFEM_VERIFY(f.n_input >= max_primal_index,
                   "ADPGFunctional: f.n_input must be larger than "
                   "primal_begin[i] + dual_entropy.n_input[i] for all i");
+      int offset = 0;
       for (int i=0; i<dual_entropy.size(); i++)
       {
          entropy_size[i] = dual_entropy[i]->n_input;
          latent_k[i].SetSize(entropy_size[i]);
+         dual_idx[i] = f.n_input + offset;
+         offset += entropy_size[i];
       }
    }
+
    ADPGFunctional(ADFunction &f, std::vector<ADEntropy*> dual_entropy,
                   std::vector<GridFunction*> latent_k_gf, std::vector<int> &primal_begin)
       : ADPGFunctional(f, std::move(dual_entropy), primal_begin)
@@ -191,6 +201,53 @@ struct ADPGFunctional : public ADFunction
       f.ProcessParameters(Tr, ip);
    }
 
+   void Gradient(const Vector &x, ElementTransformation &Tr,
+                 const IntegrationPoint &ip, Vector &J) const override
+   {
+      ProcessParameters(Tr, ip);
+      Vector x_primal(x.GetData(), f.n_input);
+      Vector x_dual;
+      f.Gradient(x_primal, J);
+      J.SetSize(n_input);
+
+      for (int i=0; i<dual_entropy.size(); i++)
+      {
+         x_dual.SetDataAndSize(x.GetData() + dual_idx[i],
+                               entropy_size[i]);
+         dual_entropy[i]->Gradient(x_dual, jac);
+         for (int j=0; j<entropy_size[i]; j++)
+         {
+            J[primal_idx[i] + j] += (x_dual[j] - latent_k[i][j])/alpha;
+            J[dual_idx[i] + j] = (x[primal_idx[i] + j] - jac[j])/alpha;
+         }
+      }
+   }
+
+   void Hessian(const Vector &x, ElementTransformation &Tr,
+                const IntegrationPoint &ip,
+                DenseMatrix &H) const override
+   {
+      ProcessParameters(Tr, ip);
+      Vector x_primal(x.GetData(), f.n_input);
+      Vector x_dual;
+      H.SetSize(n_input, n_input);
+      f.Hessian(x_primal, hess);
+      H.SetSubMatrix(0, 0, hess);
+      for (int i=0; i<dual_entropy.size(); i++)
+      {
+         x_dual.SetDataAndSize(x.GetData() + dual_idx[i],
+                               entropy_size[i]);
+         dual_entropy[i]->Hessian(x_dual, hess);
+         hess *= -1.0 / alpha;
+         H.SetSubMatrix(dual_idx[i], dual_idx[i], hess);
+         for (int j=0; j<entropy_size[i]; j++)
+         {
+            H(dual_idx[i] + j, primal_idx[i] + j) = 1.0 / alpha;
+            H(primal_idx[i] + j, dual_idx[i] + j) = 1.0 / alpha;
+         }
+      }
+   }
+
    AD_IMPL(T, V, M, x_latent,
    {
       // variables
@@ -236,7 +293,7 @@ struct ShannonEntropy : public ADEntropy
    Coefficient &bound;
    mutable real_t shift;
    int sign;
-   ShannonEntropy(Coefficient &bound, int sign)
+   ShannonEntropy(Coefficient &bound, int sign=1)
       : ADEntropy(1)
       , bound(bound)
       , sign(sign)

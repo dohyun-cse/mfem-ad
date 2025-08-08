@@ -78,6 +78,134 @@ public:
    virtual void Hessian(const Vector &x, DenseMatrix &H) const;
 };
 
+// We currently only support Jacobian.
+// To consistent with ADFunction, which returns
+// evaluate: scalar, Gradient: vector, Hessian: matrix,
+// we overrode the Gradient for evaulation, and Hessian for Jacobian
+// To be used with ADNonlinearFormIntegrator or ADBlockNonlinearFormIntegrator,
+// n_input and n_output must be the same.
+struct ADVectorFunction : public ADFunction
+{
+
+   int n_output;
+   ADVectorFunction(int n_input, int n_output)
+      : ADFunction(n_input), n_output(n_output)
+   {
+      MFEM_ASSERT(n_input > 0 && n_output > 0,
+                  "ADVectorFunction: n_input and n_output must be positive");
+   }
+
+   void operator()(const Vector &x, ElementTransformation &Tr,
+                   const IntegrationPoint &ip,
+                   Vector &F) const
+   {
+      ProcessParameters(Tr, ip);
+      (*this)(x, F);
+   }
+   // Derived struct should implement the following methods.
+   // Use AD_VEC_IMPL macro to implement them.
+   virtual void operator()(const Vector &x, Vector &F) const = 0;
+   virtual void operator()(const ADVector &x, ADVector &F) const = 0;
+   virtual void operator()(const AD2Vector &x, AD2Vector &F) const = 0;
+
+   void Gradient(const Vector &x, ElementTransformation &Tr,
+                 const IntegrationPoint &ip, DenseMatrix &J) const
+   {
+      MFEM_ASSERT(x.Size() == n_input,
+                  "ADVectorFunction::Gradient: x.Size() must match n_input");
+      ProcessParameters(Tr, ip);
+      Gradient(x, J);
+   }
+   void Gradient(const Vector &x, DenseMatrix &J) const
+   {
+      ADVector x_ad(x);
+      ADVector Fx(n_output);
+      J.SetSize(n_output, n_input);
+      for (int i=0; i<x.Size(); i++)
+      {
+         x_ad[i].gradient = 1.0;
+         Fx = ADReal_t();
+         (*this)(x_ad, Fx);
+         for (int j=0; j<n_output; j++)
+         {
+            J(j,i) = Fx[j].gradient;
+         }
+         x_ad[i].gradient = 0.0; // Reset gradient for next iteration
+      }
+   }
+   void Hessian(const Vector &x, ElementTransformation &Tr,
+                const IntegrationPoint &ip,
+                DenseTensor &H) const
+   {
+      ProcessParameters(Tr, ip);
+      Hessian(x, H);
+   }
+   void Hessian(const Vector &x, DenseTensor &H) const
+   {
+      AD2Vector x_ad(x);
+      AD2Vector Fx(n_output);
+      H.SetSize(n_input, n_input, n_output);
+      for (int i=0; i<n_input; i++) // Loop for the first derivative
+      {
+         x_ad[i].value.gradient = 1.0;
+         for (int j=0; j<=i; j++)
+         {
+            x_ad[j].gradient.value = 1.0;
+            Fx = AD2Real_t();
+            (*this)(x_ad, Fx);
+            for (int k=0; k<n_output; k++)
+            {
+               H(j, i, k) = Fx[k].gradient.gradient;
+               H(i, j, k) = Fx[k].gradient.gradient;
+            }
+            x_ad[j].gradient.value = 0.0; // Reset gradient for next iteration
+         }
+         x_ad[i].value.gradient = 0.0;
+      }
+   }
+
+   // To support ADNonlinearFormIntegrator and ADVectorNonlinearFormIntegrator
+   void Gradient(const Vector &x, ElementTransformation &Tr,
+                 const IntegrationPoint &ip, Vector &F) const override final
+   { (*this)(x, Tr, ip, F); }
+   void Gradient(const Vector &x, Vector &F) const override final
+   {
+      (*this)(x, F);
+   }
+
+   // To support ADNonlinearFormIntegrator and ADVectorNonlinearFormIntegrator
+   void Hessian(const Vector &x, ElementTransformation &Tr,
+                const IntegrationPoint &ip,
+                DenseMatrix &J) const override final
+   {
+      MFEM_ASSERT(n_input == n_output,
+                  "ADVectorFunction::Hessian: n_input must match n_output");
+      this->Gradient(x, Tr, ip, J);
+   }
+   void Hessian(const Vector &x, DenseMatrix &J) const override final
+   {
+      MFEM_ASSERT(n_input == n_output,
+                  "ADVectorFunction::Hessian: n_input must match n_output");
+      this->Gradient(x, J);
+   }
+
+   real_t operator()(const Vector &x) const override final
+   {
+      MFEM_ABORT("ADVectorFunction::operator(): This method should not be called. "
+                 "Use ADVectorFunction::operator(const Vector &x, Vector &F) instead.");
+   }
+   ADReal_t operator()(const ADVector &x) const override final
+   {
+      MFEM_ABORT("ADVectorFunction::operator(): This method should not be called. "
+                 "Use ADVectorFunction::operator(const ADVector &x, ADVector &F) instead.");
+   }
+   AD2Real_t operator()(const AD2Vector &x) const override final
+   {
+      MFEM_ABORT("ADVectorFunction::operator(): This method should not be called. "
+                 "Use ADVectorFunction::operator(const AD2Vector &x, AD2Vector &F) instead.");
+   }
+};
+
 class DifferentiableCoefficient : public Coefficient
 {
 private:
@@ -200,18 +328,21 @@ protected:
       }
    }
 };
+
 // Macro to generate type-varying implementation for ADFunction.
 // See, DiffusionEnergy, ..., for example of usage.
 // @param SCALAR is the name of templated scalar type
 // @param VEC is the name of templated vector type
 // @param MAT is the name of templated matrix type
+// @param var is the input variable name
 // @param body is the main function body. Use T() to create T-typed 0.
 #define AD_IMPL(SCALAR, VEC, MAT, var, body)                                           \
    using ADFunction::operator();                                                       \
    real_t operator()(const Vector &var) const override                                 \
    {                                                                                   \
       MFEM_ASSERT(var.Size() == n_input,                                               \
-                 "ADFunction::operator(): var.Size() must match n_input")              \
+                 "ADFunction::operator(): var.Size()=" << var.Size()                   \
+                  <<  " must match n_input=" << n_input)                               \
       using SCALAR = real_t;                                                           \
       using VEC = Vector;                                                              \
       using MAT = DenseMatrix;                                                         \
@@ -221,7 +352,8 @@ protected:
    ADReal_t operator()(const ADVector &var) const override                             \
    {                                                                                   \
       MFEM_ASSERT(var.Size() == n_input,                                               \
-                 "ADFunction::operator(): var.Size() must match n_input")              \
+                 "ADFunction::operator(): var.Size()=" << var.Size()                   \
+                  <<  " must match n_input=" << n_input)                               \
       using SCALAR = ADReal_t;                                                         \
       using VEC = ADVector;                                                            \
       using MAT = ADMatrix;                                                            \
@@ -231,7 +363,54 @@ protected:
    AD2Real_t operator()(const AD2Vector &var) const override                           \
    {                                                                                   \
       MFEM_ASSERT(var.Size() == n_input,                                               \
-                 "ADFunction::operator(): var.Size() must match n_input")              \
+                 "ADFunction::operator(): var.Size()=" << var.Size()                   \
+                  <<  " must match n_input=" << n_input)                               \
+      using SCALAR = AD2Real_t;                                                        \
+      using VEC = AD2Vector;                                                           \
+      using MAT = AD2Matrix;                                                           \
+      body                                                                             \
+   }
+
+
+// Macro to generate type-varying implementation for ADVectorFunction.
+// @param SCALAR is the name of templated scalar type
+// @param VEC is the name of templated vector type
+// @param MAT is the name of templated matrix type
+// @param var is the input variable name
+// @param result is the output variable name
+// @param body is the main function body. Use T() to create T-typed 0.
+#define AD_VEC_IMPL(SCALAR, VEC, MAT, var, result, body)                               \
+   using ADVectorFunction::operator();                                                 \
+   using ADVectorFunction::Gradient;                                                   \
+   using ADVectorFunction::Hessian;                                                    \
+                                                                                       \
+   void operator()(const Vector &var, Vector &result) const override                   \
+   {                                                                                   \
+      MFEM_ASSERT(var.Size() == n_input,                                               \
+                 "ADFunction::operator(): var.Size()=" << var.Size()                   \
+                  <<  " must match n_input=" << n_input)                               \
+      using SCALAR = real_t;                                                           \
+      using VEC = Vector;                                                              \
+      using MAT = DenseMatrix;                                                         \
+      body                                                                             \
+   }                                                                                   \
+                                                                                       \
+   void operator()(const ADVector &var, ADVector &result) const override               \
+   {                                                                                   \
+      MFEM_ASSERT(var.Size() == n_input,                                               \
+                 "ADFunction::operator(): var.Size()=" << var.Size()                   \
+                  <<  " must match n_input=" << n_input)                               \
+      using SCALAR = ADReal_t;                                                         \
+      using VEC = ADVector;                                                            \
+      using MAT = ADMatrix;                                                            \
+      body                                                                             \
+   }                                                                                   \
+                                                                                       \
+   void operator()(const AD2Vector &var, AD2Vector &result) const override             \
+   {                                                                                   \
+      MFEM_ASSERT(var.Size() == n_input,                                               \
+                 "ADFunction::operator(): var.Size()=" << var.Size()                   \
+                  <<  " must match n_input=" << n_input)                               \
       using SCALAR = AD2Real_t;                                                        \
       using VEC = AD2Vector;                                                           \
       using MAT = AD2Matrix;                                                           \
@@ -313,7 +492,7 @@ struct DiffEnergy : public ADFunction
    {
       MFEM_VERIFY(other.GetVDim() == n_input,
                   "DiffEnergy: other must have the same dimension as energy");
-      SetTarget(other);
+      this->other = &other;
    }
    DiffEnergy(const ADFunction &energy, GridFunction &other)
       : DiffEnergy(energy)

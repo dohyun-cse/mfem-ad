@@ -44,11 +44,11 @@ void ADFunction::Hessian(const Vector &x, DenseMatrix &H) const
       x_ad[i].value.gradient = 1.0;
       for (int j=0; j<=i; j++)
       {
-         x_ad[j].gradient = ADReal_t{1.0, 0.0};
+         x_ad[j].gradient.value = 1.0;
          AD2Real_t result = (*this)(x_ad);
          H(j, i) = result.gradient.gradient;
          H(i, j) = result.gradient.gradient;
-         x_ad[j].gradient = ADReal_t{0.0, 0.0}; // Reset gradient for next iteration
+         x_ad[j].gradient.value = 0.0; // Reset gradient for next iteration
       }
       x_ad[i].value.gradient = 0.0;
    }

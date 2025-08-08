@@ -309,7 +309,7 @@ inline std::array<int, sizeof...(modes)>
 {
    MFEM_ASSERT(els.Size() == numSpaces,
                "ADBlockNonlinearFormIntegrator: "
-               "el.Size() must match numSpaces");
+               "el.Size()=" << els.Size() << " must match numSpaces=" << numSpaces);
    const int sdim = Tr.GetSpaceDim();
    std::array<int, sizeof...(modes)> shapedims{};
 
@@ -385,7 +385,7 @@ ADBlockNonlinearFormIntegrator<modes...>::CalcInputShapes(
       }
 
       // Get gradient shape
-      if constexpr (hasFlag(mode, ADEval::GRAD)) { el[i].CalcPhysDShape(Tr, gshape[i]); }
+      if constexpr (hasFlag(mode, ADEval::GRAD)) { el.CalcPhysDShape(Tr, gshape[i]); }
 
       // Get divergence shape
       if constexpr (hasFlag(mode, ADEval::DIV))
@@ -414,7 +414,7 @@ real_t ADBlockNonlinearFormIntegrator<modes...>::GetElementEnergy(
 {
    MFEM_ASSERT(el.Size() == numSpaces,
                "ADBlockNonlinearFormIntegrator: "
-               "el.Size() must match numSpaces");
+               "el.Size()=" << el.Size() << " must match numSpaces=" << numSpaces);
    std::array<int, numSpaces> dof{};
    std::array<int, numSpaces> order{};
    for (int i=0; i<numSpaces; i++)
@@ -477,7 +477,7 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementVector(
 {
    MFEM_ASSERT(el.Size() == numSpaces,
                "ADBlockNonlinearFormIntegrator: "
-               "el.Size() must match numSpaces");
+               "el.Size()=" << el.Size() << " must match numSpaces=" << numSpaces);
    std::array<int, numSpaces> dof{};
    std::array<int, numSpaces> order{};
    for (int i=0; i<numSpaces; i++)
@@ -565,7 +565,7 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementGrad(
 {
    MFEM_ASSERT(el.Size() == numSpaces,
                "ADBlockNonlinearFormIntegrator: "
-               "el.Size() must match numSpaces");
+               "el.Size()=" << el.Size() << " must match numSpaces=" << numSpaces);
    Array<int> dof(numSpaces);
    Array<int> order(numSpaces);
    for (int i=0; i<numSpaces; i++)

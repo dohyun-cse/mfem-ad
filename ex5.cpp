@@ -9,9 +9,10 @@
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/tools.hpp"
 #include "src/pg.hpp"
 #include "src/dof_pg.hpp"
+#include "src/tools.hpp"
+#include <cmath>
 
 using namespace std;
 using namespace mfem;
@@ -61,7 +62,9 @@ struct MomentumFunctional : public ADFunction
 template <int opt_type>
 struct RemapALFunctional : public ADFunction
 {
+   int al_eval_mode = -1; // -1: full AL, 0: objective, >0: constraint comp
    int dim;
+   real_t domain_volume;
    MassEnergy l2_energy;
    DiffEnergy l2_diff_sqrd;
    VolumeFunctional volume;
@@ -76,8 +79,8 @@ struct RemapALFunctional : public ADFunction
    RemapALFunctional(VectorCoefficient &x0, Vector &con_target,
                      Vector &lambda, real_t &mu, real_t domain_volume)
       : ADFunction(x0.GetVDim())
-      , dim(opt_type == 3 ? con_target.Size() - 3 :
-            -1) // dim is only necessary for opt_type == 3
+      , dim(con_target.Size()) // dim is only necessary for opt_type == 3
+      , domain_volume(domain_volume)
       , l2_energy(n_input)
       , l2_diff_sqrd(l2_energy, x0)
       , volume(n_input), mass(n_input)
@@ -91,17 +94,32 @@ struct RemapALFunctional : public ADFunction
       , mu(mu)
    { con_target *= 1.0 / domain_volume; }
 
+   void SetTarget(Vector &con_target)
+   {
+      MFEM_VERIFY(con_target.Size() == this->con_target.Size(),
+                  "RemapALFunctional: con_target size mismatch");
+      this->con_target = con_target;
+      this->con_target *= 1.0 / domain_volume;
+   }
+
+   // evaluate the Augmented Lagrangian functional
+   void ALMode() { this->al_eval_mode = -1; }
+   // evaluate only the objective part
+   void ObjectiveMode() { this->al_eval_mode = 0; }
+   // evaluate only the specific component of the constraint
+   // That is, it will return c(x)
+   void ConstraintMode(int comp)
+   {
+      MFEM_VERIFY(comp >= 0 && comp < lambda.Size(),
+                  "RemapALFunctional: comp must be in [0, n_input)");
+      this->al_eval_mode = comp + 1;
+
+   }
+
    void ProcessParameters(ElementTransformation &Tr,
                           const IntegrationPoint &ip) const override
    {
-      l2_diff_sqrd.ProcessParameters(Tr, ip);
-      /* Constraints don't need to process parameters
-      volume.ProcessParameters(Tr, ip);
-      mass.ProcessParameters(Tr, ip);
-      internal_energy.ProcessParameters(Tr, ip);
-      total_energy.ProcessParameters(Tr, ip);
-      for (int i=0; i<dim; i++) { momentum[i].ProcessParameters(Tr, ip); }
-      */
+      if (al_eval_mode <= 0) { l2_diff_sqrd.ProcessParameters(Tr, ip); }
    }
 
    // Evaluate lambda*c(x) + (mu/2)*c(x)^2
@@ -109,12 +127,30 @@ struct RemapALFunctional : public ADFunction
    T evalAL(const ADFunction &c, V &x, int idx) const
    {
       T cx = c(x) - con_target[idx];
+      if (al_eval_mode > 0) { return cx; }
       return cx*(lambda[idx] + mu*0.5*cx);
    }
 
    AD_IMPL(T, V, M, x,
    {
+      if (al_eval_mode > 0)
+      {
+         switch (al_eval_mode - 1)
+         {
+            case 0: return evalAL<T>(volume, x, 0);
+            case 1: return evalAL<T>(mass, x, 1);
+            case 2:
+               if (opt_type == 2) { return evalAL<T>(internal_energy, x, 2); }
+               else { return evalAL<T>(total_energy, x, 2); }
+            case 3: return evalAL<T>(momentum[0], x, 3);
+            case 4: return evalAL<T>(momentum[1], x, 4);
+            case 5: return evalAL<T>(momentum[2], x, 5);
+            default:
+               MFEM_ABORT("RemapALFunctional: comp must be in [0, n_input)");
+         }
+      }
       T result = l2_diff_sqrd(x); // (1/2)*||x-x0||^2
+      if (al_eval_mode == 0) { return result; }
       if constexpr (opt_type >= 0) { result += evalAL<T>(volume, x, 0); }
       if constexpr (opt_type >= 1) { result += evalAL<T>(mass, x, 1); }
       if constexpr (opt_type == 2) { result += evalAL<T>(internal_energy, x, 2); }
@@ -188,9 +224,15 @@ int main(int argc, char *argv[])
       fespaces.Append(&h1_fes);
    }
    const int numVars = fespaces.Size();
+   Array<int> offsets = GetTrueOffsets(fespaces);
+   Array<ParFiniteElementSpace*> all_fespaces(fespaces);
+   all_fespaces.Append(fespaces);
+   Array<int> all_offsets = GetTrueOffsets(all_fespaces);
+   BlockVector x_and_psi(all_offsets);
+   BlockVector x_vec(x_and_psi, offsets);
+   BlockVector psi_vec(x_and_psi.GetData() + offsets[numVars], offsets);
+   BlockVector x0_vec(offsets), latent_k_vec(offsets);
 
-   Array<int> offsets(numVars*2+1);
-   offsets[0] = 0;
    VectorArrayCoefficient x0_cf(numVars);
    std::vector<std::unique_ptr<GridFunction>> x(numVars);
    std::vector<std::unique_ptr<GridFunction>> latent(numVars);
@@ -204,19 +246,16 @@ int main(int argc, char *argv[])
    for (int i=0; i<numVars; i++)
    {
       auto fes = fespaces[i];
-      offsets[i+1] = fes->GetTrueVSize();
-      offsets[numVars + i + 1] = fes->GetTrueVSize();
-
-      // x and latent's T-vector will be set later
-      x[i] = std::make_unique<ParGridFunction>(fes);
-      *x[i] = 0.5;
-      latent[i] = std::make_unique<ParGridFunction>(fes);
-      *latent[i] = 0.0;
 
       x0[i] = std::make_unique<ParGridFunction>(fes);
-      x0[i]->Randomize(); x0[i]->SetTrueVector();
+      x0[i]->MakeTRef(fespaces[i], x0_vec, offsets[i]);
+      x0[i]->Randomize();
+      (*x0[i]) *= 1e-04;
+      x0[i]->SetTrueVector();
       latent_k[i] = std::make_unique<ParGridFunction>(fes);
-      *latent_k[i] = 0.0; latent_k[i]->SetTrueVector();
+      latent_k[i]->MakeTRef(fespaces[i], latent_k_vec, offsets[i]);
+      *latent_k[i] = 0.0;
+      latent_k[i]->SetTrueVector();
 
       x_min[i] = std::make_unique<ParGridFunction>(fes);
       *x_min[i] = 0.0; x_min[i]->SetTrueVector();
@@ -226,33 +265,36 @@ int main(int argc, char *argv[])
       x0_cf.Set(i, new GridFunctionCoefficient(x0[i].get()), true);
       dual_entropies[i] = std::make_unique<FermiDiracEntropy>(
                              *x_min[i], *x_max[i]);
+
+      // x and latent's T-vector will be set later
+      x[i] = std::make_unique<ParGridFunction>(fes);
+      x[i]->MakeTRef(fespaces[i], x_vec, offsets[i]);
+      *x[i] = *x0[i];
+      x[i]->SetTrueVector();
+      latent[i] = std::make_unique<ParGridFunction>(fes);
+      latent[i]->MakeTRef(fespaces[i], psi_vec, offsets[i]);
+      *latent[i] = 0.0;
+      latent[i]->SetTrueVector();
+
       primal_begin[i] = i;
    }
-   offsets.PartialSum();
-   BlockVector x_and_psi(offsets);
-   for (int i=0; i<numVars; i++)
-   {
-      static_cast<ParGridFunction&>(*x[i]).MakeTRef(fespaces[i], x_and_psi,
-         offsets[i]);
-      x[i]->SetTrueVector();
-      static_cast<ParGridFunction&>(*latent[i]).MakeTRef(fespaces[i], x_and_psi,
-            offsets[i+numVars]);
-      latent[i]->SetTrueVector();
-   }
+
    Vector constraints_rhs(numVars);
    Vector lambda(numVars);
    lambda = 0.0;
-   real_t mu(0);
-   Vector target(numVars);
-   target = 0.0;
-   target = 0.0;
+   real_t mu(1e-02);
+   Vector con_target(numVars);
+   con_target = 0.0;
    // lambda and mu are passed by reference.
    // Changing them outside will change teh functional, too.
-   RemapALFunctional<4> AL_functional(x0_cf, target, lambda, mu, domain_volume);
+   RemapALFunctional<4> AL_functional(x0_cf, con_target, lambda, mu,
+                                      domain_volume);
+   MassEnergy bare_obj_energy(numVars);
+   DiffEnergy obj_energy(bare_obj_energy, x0_cf);
    ADPGFunctional alpg_functional(AL_functional, dual_entropies, latent_k,
                                   primal_begin);
 
-   ParBlockNonlinearForm bnlf(fespaces);
+   ParBlockNonlinearForm bnlf(all_fespaces);
    // For ADDofPGnlfi, we only set primal mode
    constexpr ADEval qfmode = ADEval::QVALUE;
    constexpr ADEval gfmode = ADEval::VALUE;
@@ -260,19 +302,73 @@ int main(int argc, char *argv[])
    {
       case 2:
          bnlf.AddDomainIntegrator(new
-                                  ADBlockNonlinearFormIntegrator<qfmode, qfmode, gfmode, gfmode, gfmode>
-                                  (AL_functional, &ir));
+                                  ADDofPGNonlinearFormIntegrator<qfmode, qfmode, gfmode, gfmode, gfmode>
+                                  (alpg_functional, &ir));
          break;
       case 3:
          bnlf.AddDomainIntegrator(new
-                                  ADBlockNonlinearFormIntegrator<qfmode, qfmode, gfmode, gfmode, gfmode, gfmode>
-                                  (AL_functional, &ir));
+                                  ADDofPGNonlinearFormIntegrator<qfmode, qfmode, gfmode, gfmode, gfmode, gfmode>
+                                  (alpg_functional, &ir));
          break;
       default:
          MFEM_ABORT("Unsupported dimension: " << dim);
    }
+
+   MUMPSMonoSolver lin_solver(MPI_COMM_WORLD);
+   NewtonSolver solver(MPI_COMM_WORLD);
+   solver.SetSolver(lin_solver);
+   solver.SetOperator(bnlf);
+   IterativeSolver::PrintLevel print_level;
+   print_level.Summary();
+   solver.SetPrintLevel(print_level);
+   solver.SetAbsTol(1e-09);
+   solver.SetRelTol(0.0);
+   solver.SetMaxIter(20);
+   solver.iterative_mode = true;
+
+   GLVis glvis("localhost", 19916, 400, 350, 4);
+   for (int i=0; i<numVars; i++)
+   {
+      glvis.Append(*x[i], std::to_string(i).c_str(), "Rjclmm");
+   }
+
+   for (int i=0; i<numVars; i++)
+   {
+      AL_functional.ConstraintMode(i);
+      con_target[i] += bnlf.GetEnergy(x_and_psi) + 1e-06;
+   }
+   AL_functional.SetTarget(con_target);
+
    Vector dummy;
+   for (int it_PG=0; it_PG<100; it_PG++)
+   {
+      out << "PG iteration " << it_PG + 1 << std::endl;
+      // update alpha
+      alpg_functional.SetAlpha(1.0);
+      // Set proximal center
+      latent_k_vec = psi_vec;
+      for (int i=0; i<numVars; i++) { latent_k[i]->SetFromTrueVector(); }
 
-
+      for (int it_AL=0; it_AL<100; it_AL++)
+      {
+         out << "  AL iteration " << it_AL + 1 << std::endl;
+         // solve AL subproblem
+         AL_functional.ALMode();
+         solver.Mult(dummy, x_and_psi);
+         for (int i=0; i<numVars; i++)
+         {
+            x[i]->SetFromTrueVector();
+            latent[i]->SetFromTrueVector();
+         }
+         for (int i=0; i<numVars; i++)
+         {
+            AL_functional.ConstraintMode(i);
+            real_t cval = bnlf.GetEnergy(x_and_psi);
+            out << "    Constraint " << i << " : " << cval << std::endl;
+            lambda[i] += mu*cval;
+         }
+      }
+      glvis.Update();
+   }
    return 0;
 }
