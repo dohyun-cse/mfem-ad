@@ -6,6 +6,19 @@
 
 namespace mfem
 {
+template <typename T>
+constexpr auto type_name()
+{
+#if defined(__clang__)
+   return std::string_view(__PRETTY_FUNCTION__);
+#elif defined(__GNUC__)
+   return std::string_view(__PRETTY_FUNCTION__);
+#elif defined(_MSC_VER)
+   return std::string_view(__FUNCSIG__);
+#else
+   return std::string_view("unknown");
+#endif
+}
 template <typename value_type, typename gradient_type, typename other_type>
 MFEM_HOST_DEVICE
 inline future::dual<value_type, gradient_type> max(
@@ -34,20 +47,83 @@ typedef TAutoDiffDenseMatrix<ADReal_t> ADMatrix;
 typedef future::dual<ADReal_t, ADReal_t> AD2Real_t;
 typedef TAutoDiffVector<AD2Real_t> AD2Vector;
 typedef TAutoDiffDenseMatrix<AD2Real_t> AD2Matrix;
+class Evaluator
+{
+   // To add a new parameter type,
+   // implement GetSize() and Eval() method
+public:
+   using param_t = std::variant<
+                   real_t, Vector, DenseMatrix,
+                   const real_t*, const Vector*, const DenseMatrix*,
+                   Coefficient*, VectorCoefficient*, MatrixCoefficient*,
+                   const GridFunction*, const QuadratureFunction*>;
+private:
+   Array<int> offsets;
+   std::vector<param_t> params;
+
+   mutable Vector loc_vec_val;
+   mutable DenseMatrix loc_mat_val;
+
+   int GetSize(const param_t &param) const;
+
+public:
+   mutable BlockVector val;
+   Evaluator(): offsets{0} {}
+   Evaluator(int capacity)
+      : offsets{0}
+   {
+      val.SetSize(capacity);
+      val.SetSize(0);
+   }
+   // Add a parameter to the evaluator
+   int Add(param_t &param);
+   // Replace a parameter at index i with a new parameter
+   // The output size of param should match the size of the old parameter
+   void Replace(size_t i, param_t &param);
+
+   // Evaluate all parameters at once
+   // and return the block vector
+   const BlockVector &Eval(ElementTransformation &Tr,
+                           const IntegrationPoint &ip) const
+   {
+      for (int i=0; i<params.size(); i++)
+      { Eval(i, Tr, ip); }
+      return val;
+   }
+
+   // Evaluate the parameter at index i
+   // this will update the val block vector, and return the corresponding block
+   const Vector& Eval(int i, ElementTransformation &Tr,
+                      const IntegrationPoint &ip) const;
+};
 
 struct ADFunction
 {
+protected:
+   Evaluator evaluator;
+
+   int AddParameter(Evaluator::param_t param)
+   { return evaluator.Add(param); }
+
+   void ReplaceParameter(int i, Evaluator::param_t param)
+   { evaluator.Replace(i, param); }
 
 public:
    virtual void ProcessParameters(ElementTransformation &Tr,
                                   const IntegrationPoint &ip) const
-   {
-      // DO nothing by default
-   }
+   { evaluator.Eval(Tr, ip); }
 
    int n_input;
    ADFunction(int n_input)
       : n_input(n_input) { }
+   // Constructor with capacity for evaluator.
+   // This is useful when the parameter size is known in advance,
+   // so that we can get references to the parameters at construction time.
+   ADFunction(int n_input, int capacity)
+      : n_input(n_input), evaluator(capacity)
+   {
+      MFEM_ASSERT(n_input > 0, "ADFunction: n_input must be positive");
+   }
    // default evaluator
    virtual real_t operator()(const Vector &x) const
    { MFEM_ABORT("Not implemented. Use AD_IMPL macro to implement all path"); }
@@ -163,7 +239,10 @@ private:
          : VectorCoefficient(dim), c(c) { }
       void Eval(Vector &J, ElementTransformation &T,
                 const IntegrationPoint &ip) override
-      { c.EvalInput(T, ip); c.f.Gradient(c.x, T, ip, J); }
+      {
+         const BlockVector &x = c.EvalInput(T, ip);
+         c.f.Gradient(x, T, ip, J);
+      }
    };
 
    friend class GradientCoefficient;
@@ -177,45 +256,43 @@ private:
          : MatrixCoefficient(dim), c(c) { }
       void Eval(DenseMatrix &H, ElementTransformation &T,
                 const IntegrationPoint &ip) override
-      { c.EvalInput(T, ip); c.f.Hessian(c.x, T, ip, H); }
+      {
+         const BlockVector &x = c.EvalInput(T, ip);
+         c.f.Hessian(x, T, ip, H);
+      }
    };
 
    friend class HessianCoefficient;
    HessianCoefficient hess_cf;
 
 protected:
+   Evaluator evaluator;
 
    ADFunction &f;
-   mutable Vector x;
-   std::vector<Coefficient*> cfs;
-   std::vector<int> cfs_idx;
-   std::vector<VectorCoefficient*> v_cfs;
-   std::vector<int> v_cfs_idx;
-   std::vector<GridFunction*> gfs;
-   std::vector<int> gfs_idx;
-   std::vector<QuadratureFunction*> qfs;
-   std::vector<int> qfs_idx;
 public:
    DifferentiableCoefficient(ADFunction &f)
-      : f(f), x(1), idx(0)
+      : f(f), idx(0)
       , grad_cf(f.n_input, *this)
       , hess_cf(f.n_input, *this)
    {}
-   DifferentiableCoefficient& AddInput(Coefficient &cf);
-   DifferentiableCoefficient& AddInput(VectorCoefficient &vcf);
-   DifferentiableCoefficient& AddInput(GridFunction &gf);
-   DifferentiableCoefficient& AddInput(QuadratureFunction &qf);
+   DifferentiableCoefficient &AddInput(Evaluator::param_t param)
+   { evaluator.Add(param); return *this; }
 
    real_t Eval(ElementTransformation &T,
                const IntegrationPoint &ip) override
-   { EvalInput(T, ip); return f(x, T, ip); }
+   {
+      const BlockVector &x = EvalInput(T, ip);
+      return f(x, T, ip);
+   }
 
    GradientCoefficient& Gradient() { return grad_cf; }
    HessianCoefficient& Hessian() { return hess_cf; }
 
 protected:
-   void EvalInput(ElementTransformation &T,
-                  const IntegrationPoint &ip) const;
+   const BlockVector& EvalInput(
+      ElementTransformation &T,
+      const IntegrationPoint &ip) const
+   { return evaluator.Eval(T, ip); }
 };
 
 // Macro to generate type-varying implementation for ADFunction.
@@ -315,94 +392,96 @@ struct MassEnergy : public ADFunction
 };
 struct DiffusionEnergy : public ADFunction
 {
+   const int dim;
+   mutable const Vector *K;
    DiffusionEnergy(int dim)
-      : ADFunction(dim)
+      : ADFunction(dim), dim(dim)
    {}
-   AD_IMPL(T, V, M, gradu, return 0.5*(gradu*gradu););
-};
-struct HeteroDiffusionEnergy : public ADFunction
-{
-   Coefficient &K;
-   mutable real_t kappa;
-   void ProcessParameters(ElementTransformation &Tr,
-                          const IntegrationPoint &ip) const override
-   {
-      kappa = K.Eval(Tr, ip);
-   }
-   HeteroDiffusionEnergy(int dim, Coefficient &K)
-      : ADFunction(dim), K(K)
-   {}
+   DiffusionEnergy(int dim, Evaluator::param_t K)
+      : DiffusionEnergy(dim)
+   { SetK(K); }
 
-   AD_IMPL(T, V, M, gradu, return (kappa*0.5)*(gradu*gradu);)
-};
-struct AnisoDiffuionEnergy : public ADFunction
-{
-   MatrixCoefficient &K;
-   mutable DenseMatrix kappa;
    void ProcessParameters(ElementTransformation &Tr,
                           const IntegrationPoint &ip) const override
+   { K = &evaluator.Eval(Tr, ip); }
+
+   void SetK(Evaluator::param_t param)
    {
-      K.Eval(kappa, Tr, ip);
-   }
-   AnisoDiffuionEnergy(int dim, MatrixCoefficient &K)
-      : ADFunction(dim), K(K), kappa(K.GetHeight(), K.GetWidth())
-   {
-      MFEM_VERIFY(dim == K.GetHeight() && dim == K.GetWidth(),
-                  "AnisoDiffuionEnergy: K must be a square matrix of size dim");
+      int i = AddParameter(param);
+      int size = evaluator.val.GetBlock(i).Size();
+      MFEM_VERIFY(size == 1 || size == n_input || size == n_input*n_input,
+                  "Incorrect size for K. Dimension is " << n_input << "but K has size " << size);
    }
 
    AD_IMPL(T, V, M, gradu,
    {
-      T result = T();
       const int dim = gradu.Size();
-      for (int i=0; i<dim; i++)
+      const int Kdim = K->Size();
+      // No diffusion coefficient, ||grad u||^2
+      if (Kdim == 0) { return 0.5*(gradu*gradu); }
+      // Scalar diffusion coefficient, ||K^{1/2} grad u||^2
+      if (Kdim == 1) { return 0.5*(*K)[0]*(gradu*gradu); }
+      // Vector diffusion coefficient, ||diag(K)^{1/2} grad u||^2
+      if (Kdim == dim)
       {
+         T result = T();
+         for (int i=0; i<dim; i++)
+         {
+            result += (*K)[i]*gradu[i]*gradu[i];
+         }
+         return 0.5*result;
+      }
+      // Matrix diffusion coefficient, ||K^{1/2} grad u||^2
+      if (Kdim == dim*dim)
+      {
+         DenseMatrix Kmat(K->GetData(), dim, dim);
+         T result = T();
          for (int j=0; j<dim; j++)
          {
-            result += kappa(i,j)*gradu[i]*gradu[j];
+            for (int i=0; i<dim; i++)
+            {
+               result += Kmat(i,j)*gradu[i]*gradu[j];
+            }
          }
+         return 0.5*result;
       }
-      return result;
+      MFEM_ABORT("DiffusionEnergy: K must be a scalar, vector of size dim, "
+                 "or matrix of size dim x dim");
+      return T();
    });
 };
 
 struct DiffEnergy : public ADFunction
 {
    const ADFunction &energy;
-   VectorCoefficient *other;
-   std::unique_ptr<VectorCoefficient> owned_cf;
-   mutable Vector other_v;
+   mutable const Vector *target;
    DiffEnergy(const ADFunction &energy)
       : ADFunction(energy.n_input)
-      , energy(energy), other_v(n_input)
+      , energy(energy)
    { }
-   DiffEnergy(const ADFunction &energy, VectorCoefficient &other)
+
+   DiffEnergy(const ADFunction &energy, Evaluator::param_t other)
       : DiffEnergy(energy)
    {
-      MFEM_VERIFY(other.GetVDim() == n_input,
-                  "DiffEnergy: other must have the same dimension as energy");
-      this->other = &other;
+      int i = AddParameter(other);
+      MFEM_VERIFY(evaluator.val.GetBlock(0).Size() == n_input,
+                  "DiffEnergy: The provided target has the wrong size. "
+                  "Expected " << n_input << ", got " << evaluator.val.GetBlock(0).Size());
    }
-   DiffEnergy(const ADFunction &energy, GridFunction &other)
-      : DiffEnergy(energy)
+
+   void SetTarget(Evaluator::param_t &target)
    {
-      MFEM_VERIFY(other.FESpace()->GetVDim() == n_input,
-                  "DiffEnergy: other must have the same dimension as energy");
-      SetTarget(other);
-   }
-   DiffEnergy(const ADFunction &energy, QuadratureFunction &other)
-      : DiffEnergy(energy)
-   {
-      MFEM_VERIFY(other.GetVDim() == n_input,
-                  "DiffEnergy: other must have the same dimension as energy");
-      SetTarget(other);
-   }
-   DiffEnergy(const ADFunction &energy, Coefficient &other)
-      : DiffEnergy(energy)
-   {
-      MFEM_VERIFY(n_input == 1,
-                  "DiffEnergy: other must have the same dimension as energy");
-      SetTarget(other);
+      if (evaluator.val.NumBlocks() == 1)
+      {
+         evaluator.Replace(0, target);
+      }
+      else
+      {
+         evaluator.Add(target);
+      }
+      MFEM_VERIFY(evaluator.val.GetBlock(0).Size() == n_input,
+                  "DiffEnergy: The provided target has the wrong size. "
+                  "Expected " << n_input << ", got " << evaluator.val.GetBlock(0).Size());
    }
 
    void ProcessParameters(ElementTransformation &Tr,
@@ -411,81 +490,37 @@ struct DiffEnergy : public ADFunction
       MFEM_ASSERT(other != nullptr,
                   "DiffEnergy: other is not set. Use SetTarget() to set it.");
       energy.ProcessParameters(Tr, ip);
-      other->Eval(other_v, Tr, ip);
+      target = &evaluator.Eval(Tr, ip);
    }
 
    AD_IMPL(T, V, M, x,
    {
       V diff(x);
-      for (int i=0; i<n_input; i++) { diff[i] -= other_v[i]; }
+      for (int i=0; i<n_input; i++)
+      { diff[i] -= (*target)[i]; }
       return energy(diff);
    });
-
-   void SetTarget(VectorCoefficient &other) { this->other = &other; }
-   void SetTarget(Coefficient &other)
-   {
-      auto cf = new VectorArrayCoefficient(1);
-      cf->Set(0, &other, false);
-      owned_cf.reset(cf);
-      this->other = cf;
-   }
-   void SetTarget(GridFunction &other)
-   {
-      if (other.FESpace()->GetVDim() == 1)
-      {
-         auto cf = new VectorArrayCoefficient(1);
-         cf->Set(0, new GridFunctionCoefficient(&other), true);
-         owned_cf.reset(cf);
-         this->other = cf;
-      }
-      else
-      {
-         owned_cf = std::make_unique<VectorGridFunctionCoefficient>(&other);
-         this->other = owned_cf.get();
-      }
-   }
-   void SetTarget(QuadratureFunction &other)
-   {
-      if (other.GetVDim() == 1)
-      {
-         auto cf = new VectorArrayCoefficient(1);
-         cf->Set(0, new QuadratureFunctionCoefficient(other), true);
-         owned_cf.reset(cf);
-         this->other = cf;
-      }
-      else
-      {
-         owned_cf = std::make_unique<VectorQuadratureFunctionCoefficient>(other);
-         this->other = owned_cf.get();
-      }
-   }
 };
 
 struct LinearElasticityEnergy : public ADFunction
 {
-   Coefficient *lambda_cf;
-   Coefficient *mu_cf;
    const int dim;
-   mutable real_t lambda;
-   mutable real_t mu;
-   std::vector<std::unique_ptr<Coefficient>> owned_cf;
+   real_t &lambda;
+   real_t &mu;
    void ProcessParameters(ElementTransformation &Tr,
                           const IntegrationPoint &ip) const override
    {
-      lambda = lambda_cf->Eval(Tr, ip);
-      mu = mu_cf->Eval(Tr, ip);
+      evaluator.Eval(Tr, ip);
    }
-   LinearElasticityEnergy(int dim, Coefficient &lambda, Coefficient &mu)
-      : ADFunction(dim*dim), lambda_cf(&lambda), mu_cf(&mu), dim(dim)
-   {}
-   LinearElasticityEnergy(int dim, real_t lambda, real_t mu)
-      : ADFunction(dim*dim), dim(dim)
+   LinearElasticityEnergy(int dim, Evaluator::param_t lambda,
+                          Evaluator::param_t mu)
+      : ADFunction(dim*dim, 2)
+      , dim(dim)
+      , lambda(*evaluator.val.GetData())
+      , mu(*(evaluator.val.GetData()+1))
    {
-      owned_cf.resize(2);
-      owned_cf[0] = std::make_unique<ConstantCoefficient>(lambda);
-      lambda_cf = owned_cf[0].get();
-      owned_cf[1] = std::make_unique<ConstantCoefficient>(mu);
-      mu_cf = owned_cf[1].get();
+      evaluator.Add(lambda);
+      evaluator.Add(mu);
    }
    AD_IMPL(T, V, M, gradu,
    {
@@ -504,6 +539,7 @@ struct LinearElasticityEnergy : public ADFunction
       return 0.5*lambda*divnorm + mu*h1_norm;
    });
 };
+
 // Lagrangian functional
 // f(x) + sum lambda[i]*c[i](x)
 struct Lagrangian : public ADFunction

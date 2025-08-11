@@ -2,6 +2,162 @@
 
 namespace mfem
 {
+int Evaluator::GetSize(const param_t &param) const
+{
+   return std::visit([](auto arg)
+   {
+      using T = std::decay_t<decltype(arg)>;
+      if constexpr (std::is_same_v<T, real_t>)
+      {
+         return 1;
+      }
+      if constexpr (std::is_same_v<T, Vector>)
+      {
+         return 1;
+      }
+      if constexpr (std::is_same_v<T, DenseMatrix>)
+      {
+         return 1;
+      }
+      if constexpr (std::is_same_v<T, const real_t*>)
+      {
+         return 1;
+      }
+      if constexpr (std::is_same_v<T, const Vector*>)
+      {
+         return arg->Size();
+      }
+      if constexpr (std::is_same_v<T, const DenseMatrix*>)
+      {
+         return arg->Height()*arg->Width();
+      }
+      if constexpr (std::is_same_v<T, Coefficient*>)
+      {
+         return 1;
+      }
+      if constexpr (std::is_same_v<T, VectorCoefficient*>)
+      {
+         return arg->GetVDim();
+      }
+      if constexpr (std::is_same_v<T, MatrixCoefficient*>)
+      {
+         return arg->GetHeight() * arg->GetWidth();
+      }
+      if constexpr (std::is_same_v<T, const GridFunction*>)
+      {
+         return arg->FESpace()->GetVDim();
+      }
+      if constexpr (std::is_same_v<T, const QuadratureFunction*>)
+      {
+         return arg->GetVDim();
+      }
+      MFEM_ABORT("Evaluator: Unsupported parameter type");
+      return 0;
+   }, param);
+}
+int Evaluator::Add(param_t &param)
+{
+   int idx = params.size();
+   params.push_back(param);
+   offsets.Append(offsets.Last() + GetSize(param));
+   val.Update(offsets);
+   std::visit([&](auto arg)
+   {
+      using T = std::decay_t<decltype(arg)>;
+      if constexpr (std::is_same_v<T, real_t>)
+      {
+         val.GetBlock(idx) = arg;
+      }
+      if constexpr (std::is_same_v<T, Vector>)
+      {
+         val.GetBlock(idx) = arg;
+      }
+      if constexpr (std::is_same_v<T, DenseMatrix>)
+      {
+         Vector v(arg.GetData(), arg.TotalSize());
+         val.GetBlock(idx) = v;
+      }
+   }, param);
+   return idx;
+}
+void Evaluator::Replace(size_t i, param_t &param)
+{
+   MFEM_VERIFY(i < params.size(),
+               "Evaluator::Set: index out of range");
+   params[i] = param;
+   int size = GetSize(param);
+   MFEM_VERIFY(size == offsets[i+1] - offsets[i],
+               "Evaluator::Set: size mismatch for parameter at index " << i
+               << ": expected " << (offsets[i+1] - offsets[i]) << ", got " << size);
+}
+
+const Vector& Evaluator::Eval(int i, ElementTransformation &Tr,
+                              const IntegrationPoint &ip) const
+{
+   std::visit([&](auto arg)
+   {
+      Vector &v = this->val.GetBlock(i);
+      using T = std::decay_t<decltype(arg)>;
+      if constexpr (std::is_same_v<T, real_t>)
+      {
+         // already stored
+         return;
+      }
+      if constexpr (std::is_same_v<T, Vector>)
+      {
+         // already stored
+         return;
+      }
+      if constexpr (std::is_same_v<T, DenseMatrix>)
+      {
+         // already stored
+         return;
+      }
+      if constexpr (std::is_same_v<T, const real_t*>)
+      {
+         v = *arg;
+         return;
+      }
+      if constexpr (std::is_same_v<T, const Vector*>)
+      {
+         v = *arg;
+         return;
+      }
+      if constexpr (std::is_same_v<T, const DenseMatrix*>)
+      {
+         DenseMatrix m(v.GetData(), arg->Height(), arg->Width());
+         m = *arg;
+         return;
+      }
+      if constexpr (std::is_same_v<T, Coefficient*>)
+      {
+         v(0) = arg->Eval(Tr, ip);
+         return;
+      }
+      if constexpr (std::is_same_v<T, VectorCoefficient*>)
+      {
+         arg->Eval(v, Tr, ip);
+         return;
+      }
+      if constexpr (std::is_same_v<T, MatrixCoefficient*>)
+      {
+         DenseMatrix m(v.GetData(), arg->GetHeight(), arg->GetWidth());
+         arg->Eval(m, Tr, ip);
+         return;
+      }
+      if constexpr (std::is_same_v<T, const GridFunction*>)
+      {
+         arg->GetVectorValue(Tr, ip, v);
+         return;
+      }
+      if constexpr (std::is_same_v<T, const QuadratureFunction*>)
+      {
+         arg->GetValues(Tr.ElementNo, ip.index, v);
+         return;
+      }
+   }, params[i]);
+   return this->val.GetBlock(i);
+}
 
 void ADFunction::Gradient(const Vector &x, ElementTransformation &Tr,
                           const IntegrationPoint &ip,
@@ -100,83 +256,6 @@ void ADVectorFunction::Hessian(const Vector &x, DenseTensor &H) const
    }
 }
 
-DifferentiableCoefficient& DifferentiableCoefficient::AddInput(Coefficient &cf)
-{
-   MFEM_VERIFY(idx < f.n_input,
-               "DifferentiableCoefficient: Too many input variables added. "
-               "n_input=" << f.n_input << ", idx=" << idx);
-   cfs.push_back(&cf);
-   cfs_idx.push_back(idx++);
-   x.SetSize(idx);
-   return *this;
-}
-
-DifferentiableCoefficient& DifferentiableCoefficient::AddInput(
-   VectorCoefficient &vcf)
-{
-   MFEM_VERIFY(idx < f.n_input,
-               "DifferentiableCoefficient: Too many input variables added. "
-               "n_input=" << f.n_input << ", idx=" << idx);
-   v_cfs.push_back(&vcf);
-   v_cfs_idx.push_back(idx);
-   idx += vcf.GetVDim();
-   x.SetSize(idx);
-   return *this;
-}
-
-DifferentiableCoefficient& DifferentiableCoefficient::AddInput(GridFunction &gf)
-{
-   MFEM_VERIFY(idx < f.n_input,
-               "DifferentiableCoefficient: Too many input variables added. "
-               "n_input=" << f.n_input << ", idx=" << idx);
-   gfs.push_back(&gf);
-   gfs_idx.push_back(idx);
-   idx += gf.FESpace()->GetVDim();
-   x.SetSize(idx);
-   return *this;
-}
-
-DifferentiableCoefficient& DifferentiableCoefficient::AddInput(
-   QuadratureFunction &qf)
-{
-   MFEM_VERIFY(idx < f.n_input,
-               "DifferentiableCoefficient: Too many input variables added. "
-               "n_input=" << f.n_input << ", idx=" << idx);
-   qfs.push_back(&qf);
-   qfs_idx.push_back(idx);
-   idx += qf.GetVDim();
-   x.SetSize(idx);
-   return *this;
-}
-
-
-void DifferentiableCoefficient::EvalInput(ElementTransformation &T,
-      const IntegrationPoint &ip) const
-{
-   Vector x_view;
-   for (int i=0; i<cfs.size(); i++)
-   {
-      x[cfs_idx[i]] = cfs[i]->Eval(T, ip);
-   }
-   for (int i=0; i<v_cfs.size(); i++)
-   {
-      x_view.SetDataAndSize(x.GetData() + v_cfs_idx[i],
-                            v_cfs[i]->GetVDim());
-      v_cfs[i]->Eval(x_view, T, ip);
-   }
-   for (int i=0; i<gfs.size(); i++)
-   {
-      x_view.SetDataAndSize(x.GetData() + gfs_idx[i],
-                            gfs[i]->FESpace()->GetVDim());
-      gfs[i]->GetVectorValue(T, ip, x_view);
-   }
-   for (int i=0; i<qfs.size(); i++)
-   {
-      x_view.SetDataAndSize(x.GetData() + qfs_idx[i],
-                            qfs[i]->GetVDim());
-      qfs[i]->GetValues(T.ElementNo, ip.index, x_view);
-   }
-}
 
 Lagrangian Lagrangian::AddEqConstraint(ADFunction &constraint,
                                        real_t target)

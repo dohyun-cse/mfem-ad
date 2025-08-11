@@ -55,11 +55,12 @@ int main(int argc, char *argv[])
    Array<int> ess_tdof_list;
    fes.GetEssentialTrueDofs(is_bdr_ess, ess_tdof_list);
 
-   LinearElasticityEnergy energy(dim, 1.0, 1.0);
+   real_t lambda(1.0), mu(1.0);
+   LinearElasticityEnergy energy(dim, lambda, mu);
 
    NonlinearForm nlf(&fes);
    nlf.AddDomainIntegrator(
-      new ADNonlinearFormIntegrator<ADEval::GRAD | ADEval::VECTOR>(energy, dim));
+      new ADNonlinearFormIntegrator<ADEval::GRAD | ADEval::VECTOR>(energy));
    nlf.SetEssentialBC(is_bdr_ess);
    LinearForm load(&fes);
    load.AddDomainIntegrator(new VectorDomainLFIntegrator(load_cf));
