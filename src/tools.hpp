@@ -17,6 +17,112 @@ public:
       return map_func(gf->GetValue(T.ElementNo, T.GetIntPoint()));
    }
 };
+class VectorGradientGridFunction : public MatrixCoefficient
+{
+private:
+   GridFunction &gf;
+public:
+   VectorGradientGridFunction(GridFunction &gf)
+      : MatrixCoefficient(gf.FESpace()->GetVDim(),
+                          gf.FESpace()->GetMesh()->SpaceDimension()), gf(gf)
+   {}
+
+   void Eval(DenseMatrix &grad, ElementTransformation &T,
+             const IntegrationPoint &ip) override
+   { gf.GetVectorGradient(T, grad); }
+};
+
+inline std::unique_ptr<GridFunction>
+NewGridFunction(FiniteElementSpace &fes)
+{
+#ifdef MFEM_USE_MPI
+   if (ParFiniteElementSpace *pfes =
+          dynamic_cast<ParFiniteElementSpace*>(&fes))
+   {
+      return std::make_unique<ParGridFunction>(pfes);
+   }
+#endif
+   return std::make_unique<GridFunction>(&fes);
+}
+
+inline std::unique_ptr<LinearForm>
+NewLinearForm(FiniteElementSpace &fes)
+{
+#ifdef MFEM_USE_MPI
+   if (ParFiniteElementSpace *pfes =
+          dynamic_cast<ParFiniteElementSpace*>(&fes))
+   {
+      return std::make_unique<ParLinearForm>(pfes);
+   }
+#endif
+   return std::make_unique<LinearForm>(&fes);
+}
+
+inline std::unique_ptr<BilinearForm>
+NewBilinearForm(FiniteElementSpace &fes)
+{
+#ifdef MFEM_USE_MPI
+   if (ParFiniteElementSpace *pfes =
+          dynamic_cast<ParFiniteElementSpace*>(&fes))
+   {
+      return std::make_unique<ParBilinearForm>(pfes);
+   }
+#endif
+   return std::make_unique<BilinearForm>(&fes);
+}
+
+inline std::unique_ptr<MixedBilinearForm>
+NewMixedBilinearForm(FiniteElementSpace &trial_fes,
+                     FiniteElementSpace &test_fes)
+{
+#ifdef MFEM_USE_MPI
+   if (ParFiniteElementSpace *trial_pfes =
+          dynamic_cast<ParFiniteElementSpace*>(&trial_fes))
+   {
+      ParFiniteElementSpace *test_pfes = dynamic_cast<ParFiniteElementSpace*>
+                                         (&test_fes);
+      MFEM_VERIFY(test_pfes != nullptr,
+                  "NewMixedBilinearForm: Trial is parallel, but test is not.");
+      return std::make_unique<ParMixedBilinearForm>(trial_pfes, test_pfes);
+   }
+   MFEM_VERIFY(dynamic_cast<ParFiniteElementSpace*>(&test_fes) == nullptr,
+               "NewMixedBilinearForm: Trial is not parallel, but test is.");
+#endif
+   return std::make_unique<MixedBilinearForm>(&trial_fes, &test_fes);
+}
+inline std::unique_ptr<NonlinearForm>
+NewNonlinearForm(FiniteElementSpace &fes)
+{
+#ifdef MFEM_USE_MPI
+   if (ParFiniteElementSpace *pfes =
+          dynamic_cast<ParFiniteElementSpace*>(&fes))
+   {
+      return std::make_unique<ParNonlinearForm>(pfes);
+   }
+#endif
+   return std::make_unique<NonlinearForm>(&fes);
+}
+inline std::unique_ptr<BlockNonlinearForm>
+NewBlockNonlinearForm(Array<FiniteElementSpace*> &fes)
+{
+#ifdef MFEM_USE_MPI
+   int numParallel = 0;
+
+   Array<ParFiniteElementSpace*> pfes;
+   for (auto *space : fes)
+   {
+      pfes.Append(dynamic_cast<ParFiniteElementSpace*>(space));
+      numParallel += pfes.Last() != nullptr;
+   }
+   MFEM_VERIFY(numParallel == 0 || numParallel == fes.Size(),
+               "NewBlockNonlinearForm: either all or none of the spaces must be parallel");
+   if (numParallel == fes.Size())
+   {
+      return std::make_unique<ParBlockNonlinearForm>(pfes);
+   }
+#endif
+   return std::make_unique<BlockNonlinearForm>(fes);
+}
 
 // Monolithic direct solver for block system
 class MUMPSMonoSolver : public MUMPSSolver

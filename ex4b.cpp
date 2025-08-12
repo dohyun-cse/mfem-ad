@@ -111,35 +111,37 @@ int main(int argc, char *argv[])
    offsets[1] = h1_fes.GetTrueVSize();
    offsets[2] = l2_fes.GetTrueVSize();
    offsets.PartialSum();
-   BlockVector x_and_psi(offsets);
+   BlockVector x_and_lambda(offsets);
 
-   ParGridFunction u(&h1_fes), psi(&l2_fes);
-   ParGridFunction psik(psi);
+   ParGridFunction u(&h1_fes), lambda(&l2_fes);
+   ParGridFunction psik(lambda);
+   psik = 0.0;
 
-   u.MakeTRef(&h1_fes, x_and_psi.GetBlock(0).GetData());
+   u.MakeTRef(&h1_fes, x_and_lambda.GetBlock(0).GetData());
    u = 0.0; u.SetTrueVector();
-   psi = 0.0; psi.SetTrueVector();
+   lambda = 0.0; lambda.SetTrueVector();
 
-   psi.MakeTRef(&l2_fes, x_and_psi.GetBlock(1).GetData());
-   psi = 0.0; psi.SetTrueVector();
-   FermiDiracEntropy entropy(0.0, 0.5);
-   ADPGFunctional pg_functional(obj_energy, entropy, psik);
+   lambda.MakeTRef(&l2_fes, x_and_lambda.GetBlock(1).GetData());
+   lambda = 0.0; lambda.SetTrueVector();
+   ConstantCoefficient lower_bound(0.0);
+   ConstantCoefficient upper_bound(0.5);
+   FermiDiracEntropy entropy(lower_bound, upper_bound);
+   ADLambdaPGFunctional pg_functional(obj_energy, entropy, psik);
    DifferentiableCoefficient entropy_cf(entropy);
-   entropy_cf.AddInput(&psi);
+   entropy_cf.AddInput(psik);
    VectorCoefficient &x_mapped_cf = entropy_cf.Gradient();
    QuadratureFunction x_mapped(&visspace);
    x_mapped = 0.0;
 
-   ConstantCoefficient zero_cf(0.0);
-   ParGridFunction lambda(psi), lambda_prev(psi);
+   ParGridFunction lambda_prev(lambda);
    GridFunctionCoefficient lambda_prev_cf(&lambda_prev);
 
    Array<ParFiniteElementSpace*> fespaces{&h1_fes, &l2_fes};
    ParBlockNonlinearForm bnlf(fespaces);
    constexpr ADEval u_mode = ADEval::VALUE | ADEval::GRAD;
-   constexpr ADEval psi_mode = ADEval::VALUE;
+   constexpr ADEval lambda_mode = ADEval::VALUE;
    bnlf.AddDomainIntegrator(
-      new ADBlockNonlinearFormIntegrator<u_mode, psi_mode>(
+      new ADBlockNonlinearFormIntegrator<u_mode, lambda_mode>(
          pg_functional, &ir)
    );
 
@@ -155,18 +157,8 @@ int main(int argc, char *argv[])
    bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
 
 
-   real_t alpha;
-   // PGPreconditioner prec(psik, psi, entropy, alpha);
-   // GMRESSolver lin_solver(comm);
-   // lin_solver.SetPreconditioner(prec);
-   // lin_solver.SetKDim(100);
-   // lin_solver.SetRelTol(1e-8);
-   // lin_solver.SetAbsTol(1e-8);
-   // lin_solver.SetMaxIter(1e05);
-   // lin_solver.SetPrintLevel(2);
-   // lin_solver.iterative_mode = true;
-   MUMPSMonoSolver lin_solver(comm);
-   NewtonSolver solver(comm);
+   MUMPSMonoSolver lin_solver(MPI_COMM_WORLD);
+   NewtonSolver solver(MPI_COMM_WORLD);
    solver.SetSolver(lin_solver);
    solver.SetOperator(bnlf);
    IterativeSolver::PrintLevel print_level;
@@ -174,7 +166,7 @@ int main(int argc, char *argv[])
    solver.SetAbsTol(1e-09);
    solver.SetRelTol(0.0);
    solver.SetMaxIter(20);
-   solver.iterative_mode = true;
+   solver.iterative_mode = false;
 
    GLVis glvis("localhost", 19916, 400, 350, 2);
    glvis.Append(u, "x", "Rjclmm");
@@ -184,27 +176,27 @@ int main(int argc, char *argv[])
    real_t lambda_diff = infinity();
    for (int i=0; i<100; i++)
    {
-      alpha = alpha_rule.Get(i);
+      real_t alpha = alpha_rule.Get(i);
       out << "PG iteration " << i + 1 << " with alpha=" << alpha << std::endl;
       pg_functional.SetAlpha(alpha);
-      psik = psi;
-      psik.SetTrueVector();
-      solver.Mult(rhs, x_and_psi);
+      solver.Mult(rhs, x_and_lambda);
       if (!solver.GetConverged())
       {
          out << "Newton Failed to converge in " << solver.GetNumIterations() <<
              std::endl;
          break;
       }
+
       u.SetFromTrueVector();
-      psi.SetFromTrueVector();
-
+      lambda.SetFromTrueVector();
+      psik.Add(alpha,lambda);
+      psik.SetTrueVector();
+      if (i > 0) { lambda_diff = lambda.ComputeL1Error(lambda_prev_cf); }
+      lambda_prev = lambda;
       x_mapped_cf.Project(x_mapped);
-      glvis.Update();
 
-      subtract(psi, psik, lambda);
-      lambda *= 1.0 / pg_functional.GetAlpha();
-      if ((lambda_diff = lambda.ComputeL1Error(lambda_prev_cf)) < 1e-10)
+      glvis.Update();
+      if (lambda_diff < 1e-10)
       {
          out << "  The dual variable, (psi - psi_k)/alpha, converged" << std::endl;
          out << "PG Converged in " << i + 1
@@ -217,7 +209,6 @@ int main(int argc, char *argv[])
              << " with residual " << solver.GetFinalNorm() << std::endl;
          out << "  Lambda difference: " << lambda_diff << std::endl;
       }
-      lambda_prev = lambda;
    }
    return 0;
 }

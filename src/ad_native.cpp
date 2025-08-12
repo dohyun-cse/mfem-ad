@@ -43,7 +43,8 @@ int Evaluator::GetSize(const param_t &param) const
       {
          return arg->GetHeight() * arg->GetWidth();
       }
-      if constexpr (std::is_same_v<T, const GridFunction*>)
+      if constexpr (std::is_same_v<T, const GridFunction*> ||
+                    std::is_same_v<T, const ParGridFunction*>)
       {
          return arg->FESpace()->GetVDim();
       }
@@ -55,7 +56,7 @@ int Evaluator::GetSize(const param_t &param) const
       return 0;
    }, param);
 }
-int Evaluator::Add(param_t &param)
+int Evaluator::Add(param_t param)
 {
    int idx = params.size();
    params.push_back(param);
@@ -80,7 +81,7 @@ int Evaluator::Add(param_t &param)
    }, param);
    return idx;
 }
-void Evaluator::Replace(size_t i, param_t &param)
+void Evaluator::Replace(size_t i, param_t param)
 {
    MFEM_VERIFY(i < params.size(),
                "Evaluator::Set: index out of range");
@@ -98,19 +99,11 @@ const Vector& Evaluator::Eval(int i, ElementTransformation &Tr,
    {
       Vector &v = this->val.GetBlock(i);
       using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, real_t>)
+      if constexpr (std::is_same_v<T, real_t> ||
+                    std::is_same_v<T, Vector> ||
+                    std::is_same_v<T, DenseMatrix>)
       {
-         // already stored
-         return;
-      }
-      if constexpr (std::is_same_v<T, Vector>)
-      {
-         // already stored
-         return;
-      }
-      if constexpr (std::is_same_v<T, DenseMatrix>)
-      {
-         // already stored
+         // Already stored, do nothing
          return;
       }
       if constexpr (std::is_same_v<T, const real_t*>)
@@ -145,7 +138,8 @@ const Vector& Evaluator::Eval(int i, ElementTransformation &Tr,
          arg->Eval(m, Tr, ip);
          return;
       }
-      if constexpr (std::is_same_v<T, const GridFunction*>)
+      if constexpr (std::is_same_v<T, const GridFunction*> ||
+                    std::is_same_v<T, const ParGridFunction*>)
       {
          arg->GetVectorValue(Tr, ip, v);
          return;
@@ -172,7 +166,7 @@ void ADFunction::Gradient(const Vector &x, Vector &J) const
                "ADFunction::Gradient: x.Size() must match n_input");
    J.SetSize(x.Size());
    ADVector x_ad(x);
-   for (int i=0; i < x.Size(); i++)
+   for (int i=0; i < n_input; i++)
    {
       x_ad[i].gradient = 1.0;
       ADReal_t result = (*this)(x_ad);
@@ -195,7 +189,7 @@ void ADFunction::Hessian(const Vector &x, DenseMatrix &H) const
                "ADFunction::Hessian: x.Size() must match n_input");
    H.SetSize(x.Size(), x.Size());
    AD2Vector x_ad(x);
-   for (int i=0; i<x.Size(); i++) // Loop for the first derivative
+   for (int i=0; i<n_input; i++) // Loop for the first derivative
    {
       x_ad[i].value.gradient = 1.0;
       for (int j=0; j<=i; j++)
@@ -217,7 +211,7 @@ void ADVectorFunction::Gradient(const Vector &x, DenseMatrix &J) const
    ADVector x_ad(x);
    ADVector Fx(n_output);
    J.SetSize(n_output, n_input);
-   for (int i=0; i<x.Size(); i++)
+   for (int i=0; i<n_input; i++)
    {
       x_ad[i].gradient = 1.0;
       Fx = ADReal_t();

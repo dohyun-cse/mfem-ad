@@ -58,6 +58,10 @@ class GLVis
    Array<mfem::GridFunction *> gfs;
    Array<mfem::QuadratureFunction *> qfs;
    Array<bool> qfkey_has_Q;
+   Array<bool> qfhas_cf;
+   Array<Coefficient*> cfs;
+   Array<VectorCoefficient*> vcfs;
+   std::vector<std::unique_ptr<QuadratureFunction>> owned_qfs;
    Array<Mesh *> meshes;
    Array<bool> parallel;
    const char *hostname;
@@ -81,6 +85,12 @@ public:
    void Append(GridFunction &gf, const char window_title[] = nullptr,
                const char keys[] = nullptr);
    void Append(QuadratureFunction &qf, const char window_title[] = nullptr,
+               const char keys[] = nullptr);
+   void Append(Coefficient &cf, QuadratureSpace &qs,
+               const char window_title[] = nullptr,
+               const char keys[] = nullptr);
+   void Append(VectorCoefficient &cf, QuadratureSpace &qs,
+               const char window_title[] = nullptr,
                const char keys[] = nullptr);
    void Update();
 

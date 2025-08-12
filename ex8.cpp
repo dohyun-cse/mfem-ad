@@ -30,7 +30,21 @@ public:
    real_t Eval(ElementTransformation &T, const IntegrationPoint &ip) override
    {
       vc.Eval(v, T, ip);
-      return v.Norml2();
+      return std::sqrt(v*v);
+   }
+};
+
+class BooleanCoefficient : public Coefficient
+{
+private:
+   Coefficient &cf;
+   std::function<bool(real_t)> func;
+public:
+   BooleanCoefficient(Coefficient &cf, std::function<bool(real_t)> func)
+      : cf(cf), func(func) {}
+   real_t Eval(ElementTransformation &T, const IntegrationPoint &ip) override
+   {
+      return func(cf.Eval(T, ip));
    }
 };
 
@@ -46,7 +60,7 @@ int main(int argc, char *argv[])
    std::stringstream filename;
    filename << "ad-obstacle-";
    int rule_type = PGStepSizeRule::RuleType::CONSTANT;
-   real_t max_alpha = 1e04;
+   real_t max_alpha = 1e06;
    real_t alpha0 = 1.0;
    real_t ratio = 1.0;
    real_t ratio2 = 1.0;
@@ -83,7 +97,7 @@ int main(int argc, char *argv[])
 
    // Mesh mesh = rhs_fun_circle
    Mesh ser_mesh = Mesh::MakeCartesian2D(10, 10,
-                                         Element::QUADRILATERAL);
+                                         Element::TRIANGLE);
    const int dim = ser_mesh.Dimension();
    for (int i = 0; i < ref_levels; i++)
    {
@@ -104,48 +118,46 @@ int main(int argc, char *argv[])
    GradientObstacleEnergy obj_energy(dim);
 
    H1_FECollection primal_fec(order, dim);
-   L2_FECollection latent_fec(order-2, dim);
+   H1_FECollection latent_fec(order-1, dim);
    ParFiniteElementSpace primal_fes(&mesh, &primal_fec);
    ParFiniteElementSpace latent_fes(&mesh, &latent_fec, dim);
    QuadratureSpace visspace(&mesh, order+3);
-   const IntegrationRule &ir = IntRules.Get(Geometry::Type::SQUARE, 3*order + 3);
-   const IntegrationRule* irs[Geometry::NUM_GEOMETRIES];
-   irs[Geometry::Type::SQUARE] = &ir;
-
-   Array<int> ess_tdof_list;
-   primal_fes.GetEssentialTrueDofs(is_bdr_ess1, ess_tdof_list);
 
    Array<int> offsets(3);
    offsets[0] = 0;
    offsets[1] = primal_fes.GetTrueVSize();
    offsets[2] = latent_fes.GetTrueVSize();
    offsets.PartialSum();
-   BlockVector x_and_lambda(offsets);
+   BlockVector x_and_latent(offsets);
+   x_and_latent = 0.0;
 
-   ParGridFunction u(&primal_fes), lambda(&latent_fes);
-   ParGridFunction psik(lambda);
-   psik = 0.0; psik.SetTrueVector();
+   ParGridFunction u(&primal_fes), latent(&latent_fes);
+   u.MakeTRef(&primal_fes, x_and_latent.GetBlock(0).GetData());
+   u.SetFromTrueVector();
+   latent.MakeTRef(&latent_fes, x_and_latent.GetBlock(1).GetData());
+   latent.SetFromTrueVector();
 
-   u.MakeTRef(&primal_fes, x_and_lambda.GetBlock(0).GetData());
-   u = 0.0; u.SetTrueVector();
-
-   lambda.MakeTRef(&latent_fes, x_and_lambda.GetBlock(1).GetData());
-   lambda = 0.0; lambda.SetTrueVector();
+   ParGridFunction latent_k(latent);
+   latent_k = 0.0; latent_k.SetTrueVector();
 
    FunctionCoefficient bound([](const Vector &x)
    { return 0.1 + 0.2*x[0] + 0.4*x[1]; });
-   HellingerEntropy entropy(dim, bound);
-   ADPGFunctional pg_functional(obj_energy, entropy, psik);
+   HellingerEntropy entropy(dim, &bound);
+   ADPGFunctional pg_functional(obj_energy, entropy, latent_k);
    DifferentiableCoefficient entropy_cf(entropy);
-   entropy_cf.AddInput(psik);
+   entropy_cf.AddInput(&latent);
    VectorNormCoefficient x_mapped_cf(entropy_cf.Gradient());
-   SumCoefficient active_set_cf(x_mapped_cf, bound, 1.0, -1.0);
-   QuadratureFunction x_mapped(&visspace);
-   x_mapped = 0.0;
+
+   GradientGridFunctionCoefficient gradu_cf(&u);
+   VectorNormCoefficient gradu_norm_cf(gradu_cf);
 
    ConstantCoefficient zero_cf(0.0);
-   ParGridFunction lambda_prev(lambda);
+   ParGridFunction lambda(latent), lambda_prev(latent);
+   lambda = 0.0; lambda.SetTrueVector();
    VectorGridFunctionCoefficient lambda_prev_cf(&lambda_prev);
+   VectorGridFunctionCoefficient lambda_cf(&lambda);
+   VectorNormCoefficient lambda_norm_cf(lambda_cf);
+   BooleanCoefficient active_set(lambda_norm_cf, [](real_t val) { return val < 1e-06; });
 
    Array<ParFiniteElementSpace*> fespaces{&primal_fes, &latent_fes};
    ParBlockNonlinearForm bnlf(fespaces);
@@ -161,15 +173,24 @@ int main(int argc, char *argv[])
    b.AddDomainIntegrator(new DomainLFIntegrator(load_cf));
    b.Assemble();
    b.ParallelAssemble(rhs.GetBlock(0));
-   rhs.GetBlock(0).SetSubVector(ess_tdof_list, 0.0);
    rhs.GetBlock(1) = 0.0;
 
-   Array<Vector*> rhs_list{&rhs.GetBlock(0), &rhs.GetBlock(1)};
-   bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
+   {
+      Array<Vector*> rhs_list{&rhs.GetBlock(0), &rhs.GetBlock(1)};
+      bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
+   }
 
-
-   MUMPSMonoSolver lin_solver(MPI_COMM_WORLD);
-   NewtonSolver solver(MPI_COMM_WORLD);
+   real_t alpha;
+   // PGPreconditioner prec(psik, lambda, entropy, alpha);
+   // GMRESSolver lin_solver(comm);
+   // lin_solver.SetPreconditioner(prec);
+   // lin_solver.SetRelTol(1e-8);
+   // lin_solver.SetAbsTol(1e-8);
+   // lin_solver.SetMaxIter(1e05);
+   // lin_solver.SetPrintLevel(2);
+   // lin_solver.iterative_mode = true;
+   MUMPSMonoSolver lin_solver(comm);
+   NewtonSolver solver(comm);
    solver.SetSolver(lin_solver);
    solver.SetOperator(bnlf);
    IterativeSolver::PrintLevel print_level;
@@ -179,18 +200,24 @@ int main(int argc, char *argv[])
    solver.SetMaxIter(20);
    solver.iterative_mode = true;
 
-   GLVis glvis("localhost", 19916, 400, 350, 2);
+   GLVis glvis("localhost", 19916, 400, 350, 4);
    glvis.Append(u, "x", "Rjclmm");
-   glvis.Append(x_mapped, "|U(psi)| - obs", "RjclQmm");
+   glvis.Append(x_mapped_cf, visspace, "|U(psi)|", "RjclQmm");
+   glvis.Append(gradu_norm_cf, visspace, "|gradu|", "RjclQmm");
+   glvis.Append(active_set, visspace, "active set, |lambda| < tol",
+                "Rjclmmpp\nautoscale off\nvaluerange 0 1");
    glvis.Update();
 
    real_t lambda_diff = infinity();
    for (int i=0; i<100; i++)
    {
-      real_t alpha = alpha_rule.Get(i);
+      alpha = alpha_rule.Get(i);
       out << "PG iteration " << i + 1 << " with alpha=" << alpha << std::endl;
       pg_functional.SetAlpha(alpha);
-      solver.Mult(rhs, x_and_lambda);
+      latent_k = latent;
+      latent_k.SetTrueVector();
+
+      solver.Mult(rhs, x_and_latent);
       if (!solver.GetConverged())
       {
          out << "Newton Failed to converge in " << solver.GetNumIterations() <<
@@ -199,14 +226,13 @@ int main(int argc, char *argv[])
       }
 
       u.SetFromTrueVector();
-      lambda.SetFromTrueVector();
-      psik.Add(alpha, lambda);
-      psik.SetTrueVector();
-      if (i > 0) { lambda_diff = lambda.ComputeL1Error(lambda_prev_cf, irs); }
-      lambda_prev = lambda;
+      latent.SetFromTrueVector();
 
-      active_set_cf.Project(x_mapped);
       glvis.Update();
+
+      subtract(latent, latent_k, lambda);
+      lambda *= 1.0 / alpha;
+      if (i > 0) { lambda_diff = lambda.ComputeL1Error(lambda_prev_cf); }
       if (lambda_diff < 1e-8)
       {
          out << "  The dual variable, (psi - psi_k)/alpha, converged" << std::endl;
@@ -220,6 +246,7 @@ int main(int argc, char *argv[])
              << " with residual " << solver.GetFinalNorm() << std::endl;
          out << "  Lambda difference: " << lambda_diff << std::endl;
       }
+      lambda_prev = lambda;
    }
    return 0;
 }

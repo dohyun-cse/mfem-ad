@@ -114,7 +114,10 @@ void GLVis::Append(GridFunction &gf, const char window_title[],
                    const char keys[])
 {
    qfkey_has_Q.Append(false);
+   cfs.Append(nullptr);
+   vcfs.Append(nullptr);
    sockets.push_back(std::make_unique<socketstream>(hostname, port, secure));
+   owned_qfs.resize(sockets.size());
    socketstream &socket = *sockets.back();
    if (!socket.is_open())
    {
@@ -168,7 +171,10 @@ void GLVis::Append(QuadratureFunction &qf, const char window_title[],
       if (keys[i] == 'Q') { hasQ=true; break; }
    }
    qfkey_has_Q.Append(hasQ);
+   cfs.Append(nullptr);
+   vcfs.Append(nullptr);
    sockets.push_back(std::make_unique<socketstream>(hostname, port, secure));
+   owned_qfs.resize(sockets.size());
    socketstream &socket = *sockets.back();
    if (!socket.is_open())
    {
@@ -213,6 +219,25 @@ void GLVis::Append(QuadratureFunction &qf, const char window_title[],
    }
 }
 
+void GLVis::Append(Coefficient &cf, QuadratureSpace &qs,
+                   const char window_title[],
+                   const char keys[])
+{
+   auto qf = std::make_unique<QuadratureFunction>(&qs);
+   Append(*qf, window_title, keys);
+   cfs.Last() = &cf;
+   owned_qfs.back() = std::move(qf);
+}
+void GLVis::Append(VectorCoefficient &cf, QuadratureSpace &qs,
+                   const char window_title[],
+                   const char keys[])
+{
+   auto qf = std::make_unique<QuadratureFunction>(&qs);
+   Append(*qf, window_title, keys);
+   vcfs.Last() = &cf;
+   owned_qfs.back() = std::move(qf);
+}
+
 void GLVis::Update()
 {
    for (int i=0; i<sockets.size(); i++)
@@ -234,6 +259,8 @@ void GLVis::Update()
       }
       else if (qfs[i])
       {
+         if (cfs[i]) { cfs[i]->Project(*qfs[i]); }
+         if (vcfs[i]) { vcfs[i]->Project(*qfs[i]); }
          *sockets[i] << "quadrature\n" << *meshes[i] << *qfs[i];
          // NOTE: GLVis seems to have a bug with Q key
          // It does not restore interpolation type after update.

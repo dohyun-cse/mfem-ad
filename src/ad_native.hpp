@@ -47,6 +47,7 @@ typedef TAutoDiffDenseMatrix<ADReal_t> ADMatrix;
 typedef future::dual<ADReal_t, ADReal_t> AD2Real_t;
 typedef TAutoDiffVector<AD2Real_t> AD2Vector;
 typedef TAutoDiffDenseMatrix<AD2Real_t> AD2Matrix;
+
 class Evaluator
 {
    // To add a new parameter type,
@@ -56,7 +57,8 @@ public:
                    real_t, Vector, DenseMatrix,
                    const real_t*, const Vector*, const DenseMatrix*,
                    Coefficient*, VectorCoefficient*, MatrixCoefficient*,
-                   const GridFunction*, const QuadratureFunction*>;
+                   const GridFunction*, const ParGridFunction*,
+                   const QuadratureFunction*>;
 private:
    Array<int> offsets;
    std::vector<param_t> params;
@@ -64,7 +66,6 @@ private:
    mutable Vector loc_vec_val;
    mutable DenseMatrix loc_mat_val;
 
-   int GetSize(const param_t &param) const;
 
 public:
    mutable BlockVector val;
@@ -76,10 +77,10 @@ public:
       val.SetSize(0);
    }
    // Add a parameter to the evaluator
-   int Add(param_t &param);
+   int Add(param_t param);
    // Replace a parameter at index i with a new parameter
    // The output size of param should match the size of the old parameter
-   void Replace(size_t i, param_t &param);
+   void Replace(size_t i, param_t param);
 
    // Evaluate all parameters at once
    // and return the block vector
@@ -95,12 +96,18 @@ public:
    // this will update the val block vector, and return the corresponding block
    const Vector& Eval(int i, ElementTransformation &Tr,
                       const IntegrationPoint &ip) const;
+   int GetSize(const param_t &param) const;
+   int GetSize(size_t i) const
+   {
+      MFEM_VERIFY(i >= 0 && i < offsets.Size() - 1,
+                  "Evaluator::GetSize: index out of range");
+      return offsets[i+1] - offsets[i];
+   }
 };
 
-struct ADFunction
+class ADFunction
 {
 protected:
-   Evaluator evaluator;
 
    int AddParameter(Evaluator::param_t param)
    { return evaluator.Add(param); }
@@ -108,14 +115,16 @@ protected:
    void ReplaceParameter(int i, Evaluator::param_t param)
    { evaluator.Replace(i, param); }
 
+   Evaluator evaluator;
 public:
    virtual void ProcessParameters(ElementTransformation &Tr,
                                   const IntegrationPoint &ip) const
-   { evaluator.Eval(Tr, ip); }
+   { ProcessParameters(evaluator.Eval(Tr, ip)); }
+   virtual void ProcessParameters(const BlockVector &param_val) const
+   { }
 
    int n_input;
-   ADFunction(int n_input)
-      : n_input(n_input) { }
+   ADFunction(int n_input): n_input(n_input) {}
    // Constructor with capacity for evaluator.
    // This is useful when the parameter size is known in advance,
    // so that we can get references to the parameters at construction time.
@@ -240,8 +249,7 @@ private:
       void Eval(Vector &J, ElementTransformation &T,
                 const IntegrationPoint &ip) override
       {
-         const BlockVector &x = c.EvalInput(T, ip);
-         c.f.Gradient(x, T, ip, J);
+         return c.f.Gradient(c.evaluator.Eval(T, ip), T, ip, J);
       }
    };
 
@@ -256,10 +264,7 @@ private:
          : MatrixCoefficient(dim), c(c) { }
       void Eval(DenseMatrix &H, ElementTransformation &T,
                 const IntegrationPoint &ip) override
-      {
-         const BlockVector &x = c.EvalInput(T, ip);
-         c.f.Hessian(x, T, ip, H);
-      }
+      { return c.f.Hessian(c.evaluator.Eval(T, ip), T, ip, H); }
    };
 
    friend class HessianCoefficient;
@@ -280,19 +285,12 @@ public:
 
    real_t Eval(ElementTransformation &T,
                const IntegrationPoint &ip) override
-   {
-      const BlockVector &x = EvalInput(T, ip);
-      return f(x, T, ip);
-   }
+   { return f(evaluator.Eval(T, ip), T, ip); }
 
    GradientCoefficient& Gradient() { return grad_cf; }
    HessianCoefficient& Hessian() { return hess_cf; }
 
 protected:
-   const BlockVector& EvalInput(
-      ElementTransformation &T,
-      const IntegrationPoint &ip) const
-   { return evaluator.Eval(T, ip); }
 };
 
 // Macro to generate type-varying implementation for ADFunction.
@@ -472,13 +470,9 @@ struct DiffEnergy : public ADFunction
    void SetTarget(Evaluator::param_t &target)
    {
       if (evaluator.val.NumBlocks() == 1)
-      {
-         evaluator.Replace(0, target);
-      }
+      { evaluator.Replace(0, target); }
       else
-      {
-         evaluator.Add(target);
-      }
+      { evaluator.Add(target); }
       MFEM_VERIFY(evaluator.val.GetBlock(0).Size() == n_input,
                   "DiffEnergy: The provided target has the wrong size. "
                   "Expected " << n_input << ", got " << evaluator.val.GetBlock(0).Size());
@@ -513,14 +507,16 @@ struct LinearElasticityEnergy : public ADFunction
       evaluator.Eval(Tr, ip);
    }
    LinearElasticityEnergy(int dim, Evaluator::param_t lambda,
-                          Evaluator::param_t mu)
+                          Evaluator::param_t mu, int offset=0)
       : ADFunction(dim*dim, 2)
       , dim(dim)
-      , lambda(*evaluator.val.GetData())
-      , mu(*(evaluator.val.GetData()+1))
+      , lambda(*(evaluator.val.GetData() + offset))
+      , mu(*(evaluator.val.GetData() + evaluator.GetSize(mu) + offset))
    {
-      evaluator.Add(lambda);
-      evaluator.Add(mu);
+      int lambda_idx = evaluator.Add(lambda);
+      int mu_idx = evaluator.Add(mu);
+      MFEM_VERIFY(lambda_idx == 0,
+                  "LinearElasticityEnergy: lambda must be the first parameter");
    }
    AD_IMPL(T, V, M, gradu,
    {
