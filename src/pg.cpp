@@ -53,4 +53,27 @@ real_t PGStepSizeRule::Get(int iter) const
    return std::min(alpha, max_alpha);
 }
 
+const GridFunction& ADPGFunctional::GetPrevLatent(int i) const
+{
+   Evaluator::param_t param = evaluator.Get(i);
+   const GridFunction* gf = std::visit([&](auto arg)
+   {
+      using T = std::decay_t<decltype(arg)>;
+      if constexpr (std::is_same_v<T, const GridFunction*> ||
+                    std::is_same_v<T, const ParGridFunction*>)
+      {
+         return (const GridFunction*)arg;
+      }
+      else
+      {
+         MFEM_ABORT("Parameter at index " << i
+                    << " is not a GridFunction or ParGridFunction");
+         return (const GridFunction*)nullptr;
+      }
+   }, param);
+   MFEM_VERIFY(gf != nullptr,
+               "ADPGFunctional: GetPrevLatent(" << i << ") is null");
+   return *gf;
+}
+
 }

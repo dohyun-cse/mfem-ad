@@ -211,7 +211,7 @@ int main(int argc, char *argv[])
    std::vector<std::unique_ptr<ADFunction>> constraints
       = MakeConstraints(HYDRO, dim);
    MassEnergy bare_obj_energy(numVars);
-   DiffEnergy obj_energy(bare_obj_energy, x0_cf);
+   DiffEnergy obj_energy(bare_obj_energy, &x0_cf);
    ALFunctional AL_functional(obj_energy);
    for (int i=0; i<constraints.size(); i++)
    {

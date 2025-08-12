@@ -76,6 +76,15 @@ protected:
    mutable DenseMatrix hess;
    real_t alpha = 1.0;
    std::unique_ptr<VectorCoefficient> owned_cf;
+   static int GetEntropySize(const std::vector<ADEntropy*> &dual_entropy)
+   {
+      int size = 0;
+      for (const auto &entropy : dual_entropy)
+      {
+         size += entropy->n_input;
+      }
+      return size;
+   }
 
 public:
    ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy, int idx=0)
@@ -102,7 +111,7 @@ public:
    // Multiple entropies
    ADPGFunctional(ADFunction &f, std::vector<ADEntropy*> dual_entropy_,
                   std::vector<int> &primal_begin)
-      : ADFunction(f.n_input)
+      : ADFunction(f.n_input + GetEntropySize(dual_entropy_))
       , f(f), dual_entropy(std::move(dual_entropy_))
       , primal_idx(primal_begin)
       , dual_idx(dual_entropy.size())
@@ -116,7 +125,6 @@ public:
          max_primal_index = std::max(max_primal_index,
                                      primal_begin[i] + dual_entropy[i]->n_input);
       }
-      n_input += dual_entropy_size;
       MFEM_VERIFY(f.n_input >= max_primal_index,
                   "ADPGFunctional: f.n_input must be larger than "
                   "primal_begin[i] + dual_entropy.n_input[i] for all i");
@@ -149,6 +157,8 @@ public:
       : ADPGFunctional(f, uniquevec2ptrvec(dual_entropy),
                        uniquevec2ptrvec(latent_k_gf), primal_begin)
    {}
+
+   const GridFunction& GetPrevLatent(int i) const;
 
    ADFunction &GetObjective() const
    { return f; }
@@ -310,10 +320,10 @@ public:
    });
 };
 // Dual entropy for (negative) Hellinger entropy with bound > 0
-struct HellingerEntropy : public ADEntropy
+class HellingerEntropy : public ADEntropy
 {
    const real_t &scale;
-
+public:
    HellingerEntropy(int dim, Evaluator::param_t bound)
       : ADEntropy(dim, 1)
       , scale(*evaluator.val.GetData())
@@ -333,10 +343,10 @@ struct HellingerEntropy : public ADEntropy
 // Dual entropy for (negative) Simplex entropy with
 // x_i >= 0 sum_i x_i = bound
 // Also known as cateborical entropy or multinomial Shannon entropy
-struct SimplexEntropy : public ADEntropy
+class SimplexEntropy : public ADEntropy
 {
    const real_t &scale;
-
+public:
    SimplexEntropy(int n_input, Evaluator::param_t bound)
       : ADEntropy(n_input, 1), scale(*evaluator.val.GetData())
    {

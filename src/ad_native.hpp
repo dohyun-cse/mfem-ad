@@ -66,7 +66,6 @@ private:
    mutable Vector loc_vec_val;
    mutable DenseMatrix loc_mat_val;
 
-
 public:
    mutable BlockVector val;
    Evaluator(): offsets{0} {}
@@ -81,6 +80,12 @@ public:
    // Replace a parameter at index i with a new parameter
    // The output size of param should match the size of the old parameter
    void Replace(size_t i, param_t param);
+   param_t Get(size_t i) const
+   {
+      MFEM_VERIFY(i >= 0 && i < params.size(),
+                  "Evaluator::Get: index out of range");
+      return params[i];
+   }
 
    // Evaluate all parameters at once
    // and return the block vector
@@ -96,7 +101,7 @@ public:
    // this will update the val block vector, and return the corresponding block
    const Vector& Eval(int i, ElementTransformation &Tr,
                       const IntegrationPoint &ip) const;
-   int GetSize(const param_t &param) const;
+   static int GetSize(const param_t &param);
    int GetSize(size_t i) const
    {
       MFEM_VERIFY(i >= 0 && i < offsets.Size() - 1,
@@ -123,7 +128,7 @@ public:
    virtual void ProcessParameters(const BlockVector &param_val) const
    { }
 
-   int n_input;
+   const int n_input;
    ADFunction(int n_input): n_input(n_input) {}
    // Constructor with capacity for evaluator.
    // This is useful when the parameter size is known in advance,
@@ -381,17 +386,19 @@ protected:
       body                                                                             \
    }
 
-struct MassEnergy : public ADFunction
+class MassEnergy : public ADFunction
 {
+public:
    MassEnergy(int n_var)
       : ADFunction(n_var)
    {}
    AD_IMPL(T, V, M, x, return 0.5*(x*x););
 };
-struct DiffusionEnergy : public ADFunction
+class DiffusionEnergy : public ADFunction
 {
    const int dim;
    mutable const Vector *K;
+public:
    DiffusionEnergy(int dim)
       : ADFunction(dim), dim(dim)
    {}
@@ -449,10 +456,11 @@ struct DiffusionEnergy : public ADFunction
    });
 };
 
-struct DiffEnergy : public ADFunction
+class DiffEnergy : public ADFunction
 {
    const ADFunction &energy;
    mutable const Vector *target;
+public:
    DiffEnergy(const ADFunction &energy)
       : ADFunction(energy.n_input)
       , energy(energy)
@@ -496,11 +504,12 @@ struct DiffEnergy : public ADFunction
    });
 };
 
-struct LinearElasticityEnergy : public ADFunction
+class LinearElasticityEnergy : public ADFunction
 {
    const int dim;
    real_t &lambda;
    real_t &mu;
+public:
    void ProcessParameters(ElementTransformation &Tr,
                           const IntegrationPoint &ip) const override
    {
@@ -538,7 +547,7 @@ struct LinearElasticityEnergy : public ADFunction
 
 // Lagrangian functional
 // f(x) + sum lambda[i]*c[i](x)
-struct Lagrangian : public ADFunction
+class Lagrangian : public ADFunction
 {
 private:
    enum { OBJONLY=-2, FULL=-1, CON=0};
@@ -551,8 +560,8 @@ private:
    Vector eq_rhs; // c[i](x) = con_target[i]
 public:
 
-   Lagrangian(ADFunction &objective)
-      : ADFunction(objective.n_input)
+   Lagrangian(ADFunction &objective, const int n_eq_con)
+      : ADFunction(objective.n_input+n_eq_con)
       , objective(objective)
    {}
 
@@ -592,7 +601,7 @@ private:
 };
 
 // Augmented Lagrangian functional
-struct ALFunctional : public ADFunction
+class ALFunctional : public ADFunction
 {
 private:
    enum { OBJONLY=-2, FULLAL=-1, CON=0};
@@ -660,280 +669,6 @@ private:
       return cx*(lambda[idx] + penalty*0.5*cx);
    }
 };
-// ----------------------------------------------------------------
-// Operator overloading for ADFunction arithmetics
-// Using shared_ptr to manage memory.
-// Not ideal, but good enough for now.
-// ----------------------------------------------------------------
-struct ProductADFunction : public ADFunction
-{
-   const std::shared_ptr<ADFunction> f1;
-   const std::shared_ptr<ADFunction> f2;
-
-   ProductADFunction(const std::shared_ptr<ADFunction> &f1,
-                     const std::shared_ptr<ADFunction> &f2)
-      : ADFunction(0), f1(f1), f2(f2)
-   {
-      MFEM_ASSERT(f1.get() != nullptr && f2.get() != nullptr,
-                  "ProductADFunction: f1 and f2 must not be null");
-      MFEM_ASSERT(f1->n_input == f2->n_input,
-                  "ProductADFunction: f1 and f2 must have the same n_input");
-      n_input = f1->n_input; // Set n_input to the common input size
-   }
-
-   void ProcessParameters(ElementTransformation &Tr,
-                          const IntegrationPoint &ip) const override
-   {
-      f1->ProcessParameters(Tr, ip);
-      f2->ProcessParameters(Tr, ip);
-   }
-
-   real_t operator()(const Vector &x) const override
-   { return (*f1)(x)*(*f2)(x); }
-   real_t operator()(const Vector &x, ElementTransformation &Tr,
-                     const IntegrationPoint &ip) const override
-   { return (*f1)(x, Tr, ip) * (*f2)(x, Tr, ip); }
-   ADReal_t operator()(const ADVector &x) const override
-   { return (*f1)(x) * (*f2)(x); }
-   AD2Real_t operator()(const AD2Vector &x) const override
-   { return (*f1)(x) * (*f2)(x); }
-};
-inline std::shared_ptr<ADFunction>
-operator*(const std::shared_ptr<ADFunction> &f1,
-          const std::shared_ptr<ADFunction> &f2)
-{ return std::make_shared<ProductADFunction>(f1, f2); }
-
-struct ScaledADFunction : public ADFunction
-{
-   const std::shared_ptr<ADFunction> f1;
-   real_t a;
-
-   ScaledADFunction(const std::shared_ptr<ADFunction> &f1,
-                    real_t a)
-      : ADFunction(0), f1(f1), a(a)
-   {
-      MFEM_ASSERT(f1.get() != nullptr,
-                  "ProductADFunction: f1 and f2 must not be null");
-      n_input = f1->n_input; // Set n_input to the common input size
-   }
-
-   void ProcessParameters(ElementTransformation &Tr,
-                          const IntegrationPoint &ip) const override
-   {
-      f1->ProcessParameters(Tr, ip);
-   }
-
-   real_t operator()(const Vector &x) const override
-   { return (*f1)(x)*a; }
-   real_t operator()(const Vector &x, ElementTransformation &Tr,
-                     const IntegrationPoint &ip) const override
-   { return (*f1)(x, Tr, ip) * a; }
-   ADReal_t operator()(const ADVector &x) const override
-   { return (*f1)(x) * a; }
-   AD2Real_t operator()(const AD2Vector &x) const override
-   { return (*f1)(x) * a; }
-};
-inline std::shared_ptr<ADFunction>
-operator*(const std::shared_ptr<ADFunction> &f1,
-          real_t a)
-{ return std::make_shared<ScaledADFunction>(f1, a); }
-inline std::shared_ptr<ADFunction>
-operator*(real_t a,
-          const std::shared_ptr<ADFunction> &f1)
-{ return std::make_shared<ScaledADFunction>(f1, a); }
-inline std::shared_ptr<ADFunction>
-operator/(const std::shared_ptr<ADFunction> &f1,
-          real_t a)
-{ return std::make_shared<ScaledADFunction>(f1, 1.0/a); }
-
-struct SumADFunction : public ADFunction
-{
-   const std::shared_ptr<ADFunction> f1;
-   const std::shared_ptr<ADFunction> f2;
-   real_t b; // scaling factor for f2
-
-   SumADFunction(const std::shared_ptr<ADFunction> &f1,
-                 const std::shared_ptr<ADFunction> &f2, real_t b)
-      : ADFunction(0), f1(f1), f2(f2)
-   {
-      MFEM_ASSERT(f1.get() != nullptr && f2.get() != nullptr,
-                  "ProductADFunction: f1 and f2 must not be null");
-      MFEM_ASSERT(f1->n_input == f2->n_input,
-                  "ProductADFunction: f1 and f2 must have the same n_input");
-      n_input = f1->n_input; // Set n_input to the common input size
-   }
-
-   void ProcessParameters(ElementTransformation &Tr,
-                          const IntegrationPoint &ip) const override
-   {
-      f1->ProcessParameters(Tr, ip);
-      f2->ProcessParameters(Tr, ip);
-   }
-
-   real_t operator()(const Vector &x) const override
-   { return (*f1)(x) + b*(*f2)(x); }
-   real_t operator()(const Vector &x, ElementTransformation &Tr,
-                     const IntegrationPoint &ip) const override
-   { return (*f1)(x, Tr, ip) + b*(*f2)(x, Tr, ip); }
-   ADReal_t operator()(const ADVector &x) const override
-   { return (*f1)(x) + b*(*f2)(x); }
-   AD2Real_t operator()(const AD2Vector &x) const override
-   { return (*f1)(x) + b* (*f2)(x); }
-};
-inline std::shared_ptr<ADFunction>
-operator+(const std::shared_ptr<ADFunction> &f1,
-          const std::shared_ptr<ADFunction> &f2)
-{ return std::make_shared<SumADFunction>(f1, f2, 1.0); }
-inline std::shared_ptr<ADFunction>
-operator-(const std::shared_ptr<ADFunction> &f1,
-          const std::shared_ptr<ADFunction> &f2)
-{ return std::make_shared<SumADFunction>(f1, f2, -1.0); }
-
-struct ShiftedADFunction : public ADFunction
-{
-   const std::shared_ptr<ADFunction> f1;
-   real_t b; // scaling factor for f2
-
-   ShiftedADFunction(const std::shared_ptr<ADFunction> &f1, real_t b)
-      : ADFunction(0), f1(f1), b(b)
-   {
-      MFEM_ASSERT(f1.get() != nullptr,
-                  "ProductADFunction: f1 must not be null");
-      n_input = f1->n_input; // Set n_input to the common input size
-   }
-
-   void ProcessParameters(ElementTransformation &Tr,
-                          const IntegrationPoint &ip) const override
-   {
-      f1->ProcessParameters(Tr, ip);
-   }
-
-   real_t operator()(const Vector &x) const override
-   { return (*f1)(x) + b; }
-   real_t operator()(const Vector &x, ElementTransformation &Tr,
-                     const IntegrationPoint &ip) const override
-   { return (*f1)(x, Tr, ip) + b; }
-   ADReal_t operator()(const ADVector &x) const override
-   { return (*f1)(x) + b; }
-   AD2Real_t operator()(const AD2Vector &x) const override
-   { return (*f1)(x) + b; }
-};
-inline std::shared_ptr<ADFunction>
-operator+(const std::shared_ptr<ADFunction> &f1, real_t b)
-{ return std::make_shared<ShiftedADFunction>(f1, b); }
-inline std::shared_ptr<ADFunction>
-operator+(real_t b,const std::shared_ptr<ADFunction> &f1)
-{ return std::make_shared<ShiftedADFunction>(f1, b); }
-
-inline std::shared_ptr<ADFunction>
-operator-(const std::shared_ptr<ADFunction> &f1, real_t b)
-{ return std::make_shared<ShiftedADFunction>(f1, -b); }
-
-struct QuatiendADFunction : public ADFunction
-{
-   const std::shared_ptr<ADFunction> f1;
-   const std::shared_ptr<ADFunction> f2;
-
-   QuatiendADFunction(const std::shared_ptr<ADFunction> &f1,
-                      const std::shared_ptr<ADFunction> &f2)
-      : ADFunction(0), f1(f1), f2(f2)
-   {
-      MFEM_ASSERT(f1.get() != nullptr && f2.get() != nullptr,
-                  "QuatiendADFunction: f1 and f2 must not be null");
-      MFEM_ASSERT(f1->n_input == f2->n_input,
-                  "QuatiendADFunction: f1 and f2 must have the same n_input");
-      n_input = f1->n_input; // Set n_input to the common input size
-   }
-
-   void ProcessParameters(ElementTransformation &Tr,
-                          const IntegrationPoint &ip) const override
-   {
-      f1->ProcessParameters(Tr, ip);
-      f2->ProcessParameters(Tr, ip);
-   }
-
-   real_t operator()(const Vector &x) const override
-   { return (*f1)(x) / (*f2)(x); }
-   real_t operator()(const Vector &x, ElementTransformation &Tr,
-                     const IntegrationPoint &ip) const override
-   { return (*f1)(x, Tr, ip) / (*f2)(x, Tr, ip); }
-   ADReal_t operator()(const ADVector &x) const override
-   { return (*f1)(x) / (*f2)(x); }
-   AD2Real_t operator()(const AD2Vector &x) const override
-   { return (*f1)(x) / (*f2)(x); }
-};
-inline std::shared_ptr<ADFunction>
-operator/(const std::shared_ptr<ADFunction> &f1,
-          const std::shared_ptr<ADFunction> &f2)
-{ return std::make_shared<QuatiendADFunction>(f1, f2); }
-
-struct ReciprocalADFunction : public ADFunction
-{
-   const std::shared_ptr<ADFunction> f1;
-   real_t a;
-
-   ReciprocalADFunction(const std::shared_ptr<ADFunction> &f1, real_t a)
-      : ADFunction(0), f1(f1)
-   {
-      MFEM_ASSERT(f1.get() != nullptr,
-                  "ReciprocalADFunction: f1 must not be null");
-      n_input = f1->n_input; // Set n_input to the common input size
-   }
-
-   void ProcessParameters(ElementTransformation &Tr,
-                          const IntegrationPoint &ip) const override
-   {
-      f1->ProcessParameters(Tr, ip);
-   }
-
-   real_t operator()(const Vector &x) const override
-   { return a / (*f1)(x); }
-   real_t operator()(const Vector &x, ElementTransformation &Tr,
-                     const IntegrationPoint &ip) const override
-   { return a / (*f1)(x, Tr, ip); }
-   ADReal_t operator()(const ADVector &x) const override
-   { return a / (*f1)(x); }
-   AD2Real_t operator()(const AD2Vector &x) const override
-   { return a / (*f1)(x); }
-};
-inline std::shared_ptr<ADFunction>
-operator/(real_t a, const std::shared_ptr<ADFunction> &f1)
-{ return std::make_shared<ReciprocalADFunction>(f1, a); }
-
-struct ReferenceConstantADFunction : public ADFunction
-{
-   real_t &a;
-
-   ReferenceConstantADFunction(real_t &a, int n_input)
-      : ADFunction(n_input)
-      , a(a)
-   { }
-   real_t operator()(const Vector &x, ElementTransformation &Tr,
-                     const IntegrationPoint &ip) const override
-   { return a; }
-
-   // default Jacobian evaluator
-   real_t operator()(const Vector &x) const override
-   { return a; }
-   ADReal_t operator()(const ADVector &x) const override
-   { return ADReal_t{a, 0.0}; }
-
-   // default Hessian evaluator
-   AD2Real_t operator()(const AD2Vector &x) const override
-   { return AD2Real_t{a, 0.0}; }
-
-   void Gradient(const Vector &x, Vector &J) const override
-   {
-      J.SetSize(x.Size());
-      J = 0.0; // Gradient is zero for constant function
-   }
-   void Hessian(const Vector &x, DenseMatrix &H) const override
-   {
-      H.SetSize(x.Size(), x.Size());
-      H = 0.0; // Hessian is zero for constant function
-   }
-};
-
 // ------------------------------------------------------------------------------
 // Implement dual max/min
 // ------------------------------------------------------------------------------

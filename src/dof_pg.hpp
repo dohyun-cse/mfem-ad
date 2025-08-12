@@ -37,7 +37,7 @@ real_t ADDofPGNonlinearFormIntegrator<modes...>::GetElementEnergy(
    real_t pg_energy = 0.0;
    for (int i=0; i<entropies.size(); i++)
    {
-      GridFunction &dual_val_k_gf = pg_functional.GetPrevLatent(i);
+      const GridFunction &dual_val_k_gf = pg_functional.GetPrevLatent(i);
       auto &primal_fe = *primal_el[i];
       auto &dual_fe = *dual_el[i];
       auto &primal_val = *primal_elfun[i];
@@ -101,7 +101,7 @@ void ADDofPGNonlinearFormIntegrator<modes...>::AssembleElementVector(
    real_t w;
    for (int i=0; i<entropies.size(); i++)
    {
-      GridFunction &dual_val_k = pg_functional.GetPrevLatent(i);
+      const GridFunction &dual_val_k = pg_functional.GetPrevLatent(i);
       auto &primal_fe = *primal_el[i];
       auto &dual_fe = *dual_el[i];
       auto &primal_val = *primal_elfun[i];
@@ -199,7 +199,7 @@ void ADDofPGNonlinearFormIntegrator<modes...>::AssembleElementGrad(
    real_t w;
    for (int i=0; i<entropies.size(); i++)
    {
-      GridFunction &dual_val_k = pg_functional.GetPrevLatent(i);
+      const GridFunction &dual_val_k = pg_functional.GetPrevLatent(i);
       auto &primal_fe = *primal_el[i];
       auto &dual_fe = *dual_el[i];
       auto &dual_val = *dual_elfun[i];

@@ -2,7 +2,7 @@
 
 namespace mfem
 {
-int Evaluator::GetSize(const param_t &param) const
+int Evaluator::GetSize(const param_t &param)
 {
    return std::visit([](auto arg)
    {
@@ -254,7 +254,6 @@ void ADVectorFunction::Hessian(const Vector &x, DenseTensor &H) const
 Lagrangian Lagrangian::AddEqConstraint(ADFunction &constraint,
                                        real_t target)
 {
-   n_input++;
    eq_con.push_back(&constraint);
    int numCon = eq_con.size();
    eq_rhs.SetSize(numCon);
