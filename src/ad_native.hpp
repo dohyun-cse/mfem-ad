@@ -54,8 +54,8 @@ class Evaluator
    // implement GetSize() and Eval() method
 public:
    using param_t = std::variant<
-                   real_t, Vector, DenseMatrix,
-                   const real_t*, const Vector*, const DenseMatrix*,
+                   real_t, Vector, DenseMatrix, // pass by value
+                   const real_t*, const Vector*, const DenseMatrix*, // pass by pointer
                    Coefficient*, VectorCoefficient*, MatrixCoefficient*,
                    const GridFunction*, const ParGridFunction*,
                    const QuadratureFunction*>;
