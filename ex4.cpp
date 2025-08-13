@@ -129,6 +129,7 @@ int main(int argc, char *argv[])
 
    ConstantCoefficient zero_cf(0.0);
    ParGridFunction lambda(psi), lambda_prev(psi);
+   lambda = 0.0;
    GridFunctionCoefficient lambda_prev_cf(&lambda_prev);
 
    Array<ParFiniteElementSpace*> fespaces{&h1_fes, &l2_fes};

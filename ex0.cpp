@@ -60,7 +60,7 @@ void hessian(const Vector &x, DenseMatrix &H)
    H(2, 2) = 6.0 * std::pow(x(2), 1.0);
 }
 
-void jacobian2(const Vector &x, DenseMatrix &J)
+void jacobian(const Vector &x, DenseMatrix &J)
 {
    // result[0]=sin(x[0]*x[1]);
    // result[1]=cos(x[0]*x[1]*x[2]);)
@@ -115,7 +115,7 @@ int main(int argc, char *argv[])
 
    DenseMatrix jac2, jac2_ref;
    f2.Gradient(x, jac2);
-   jacobian2(x, jac2_ref);
+   jacobian(x, jac2_ref);
 
    DenseTensor hess2, hess2_ref;
    f2.Hessian(x, hess2);

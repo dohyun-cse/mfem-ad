@@ -177,8 +177,6 @@ int main(int argc, char *argv[])
       latent_k = latent;
       latent_k.SetTrueVector();
 
-      latent.Add(alpha, lambda);
-
       solver.SetSolver(lin_solver);
       solver.SetOperator(bnlf);
       solver.Mult(rhs, x_and_latent);
