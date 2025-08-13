@@ -70,7 +70,7 @@ class GLVis
    const int port;
    int w, h, nrWinPerRow;
    bool secure;
-   void Append(GridFunction *gf, QuadratureFunction *qf,
+   bool Append(GridFunction *gf, QuadratureFunction *qf,
                std::string_view window_title, std::string_view keys);
 
 public:
