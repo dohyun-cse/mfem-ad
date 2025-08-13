@@ -91,8 +91,7 @@ int main(int argc, char *argv[])
 
    ParGridFunction u(&h1_fes, x, offsets[0]), psi(&l2_fes, x, offsets[1]),
                    psi_k(&l2_fes);
-   u.MakeTRef(&h1_fes, x, offsets[0]); psi.MakeTRef(&l2_fes, x, offsets[1]);
-   u.SetFromTrueVector(); psi.SetFromTrueVector();
+   u.SetFromTrueDofs(tx.GetBlock(0)); psi.SetFromTrueDofs(tx.GetBlock(1));
 
    DamProblem2D obj_functional(1.0, 1.0);
    ShannonEntropy entropy(0.0);
@@ -123,7 +122,7 @@ int main(int argc, char *argv[])
    solver.SetPrintLevel(print_level);
 
    DifferentiableCoefficient entropy_cf(entropy);
-   entropy_cf.AddInput(psi);
+   entropy_cf.AddInput(&psi);
    VectorCoefficient &Upsi_cf = entropy_cf.Gradient();
 
    QuadratureSpace visspace(&mesh, order+3);
@@ -143,8 +142,8 @@ int main(int argc, char *argv[])
       psi_k.SetTrueVector();
 
       solver.Mult(tb, tx);
-      u.SetFromTrueVector();
-      psi.SetFromTrueVector();
+      u.SetFromTrueDofs(tx.GetBlock(0));
+      psi.SetFromTrueDofs(tx.GetBlock(1));
       Upsi_cf.Project(Upsi);
       glvis.Update();
    }

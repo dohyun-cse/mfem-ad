@@ -116,12 +116,9 @@ int main(int argc, char *argv[])
    ParGridFunction u(&h1_fes), psi(&l2_fes);
    ParGridFunction psik(psi);
 
-   u.MakeTRef(&h1_fes, x_and_psi.GetBlock(0).GetData());
-   u = 0.0; u.SetTrueVector();
-   psi = 0.0; psi.SetTrueVector();
+   u = 0.0; u.ParallelAssemble(x_and_psi.GetBlock(0));
+   psi = 0.0; u.ParallelAssemble(x_and_psi.GetBlock(1));
 
-   psi.MakeTRef(&l2_fes, x_and_psi.GetBlock(1).GetData());
-   psi = 0.0; psi.SetTrueVector();
    FermiDiracEntropy entropy(0.0, 0.5);
    ADPGFunctional pg_functional(obj_energy, entropy, psik);
    DifferentiableCoefficient entropy_cf(entropy);
@@ -196,8 +193,8 @@ int main(int argc, char *argv[])
              std::endl;
          break;
       }
-      u.SetFromTrueVector();
-      psi.SetFromTrueVector();
+      u.SetFromTrueDofs(x_and_psi.GetBlock(0));
+      psi.SetFromTrueDofs(x_and_psi.GetBlock(1));
 
       x_mapped_cf.Project(x_mapped);
       glvis.Update();

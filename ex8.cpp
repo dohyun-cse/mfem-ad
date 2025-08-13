@@ -132,10 +132,8 @@ int main(int argc, char *argv[])
    x_and_latent = 0.0;
 
    ParGridFunction u(&primal_fes), latent(&latent_fes);
-   u.MakeTRef(&primal_fes, x_and_latent.GetBlock(0).GetData());
-   u.SetFromTrueVector();
-   latent.MakeTRef(&latent_fes, x_and_latent.GetBlock(1).GetData());
-   latent.SetFromTrueVector();
+   u.SetFromTrueDofs(x_and_latent.GetBlock(0));
+   latent.SetFromTrueDofs(x_and_latent.GetBlock(1));
 
    ParGridFunction latent_k(latent);
    latent_k = 0.0; latent_k.SetTrueVector();
@@ -181,18 +179,9 @@ int main(int argc, char *argv[])
    }
 
    real_t alpha;
-   // PGPreconditioner prec(psik, lambda, entropy, alpha);
-   // GMRESSolver lin_solver(comm);
-   // lin_solver.SetPreconditioner(prec);
-   // lin_solver.SetRelTol(1e-8);
-   // lin_solver.SetAbsTol(1e-8);
-   // lin_solver.SetMaxIter(1e05);
-   // lin_solver.SetPrintLevel(2);
-   // lin_solver.iterative_mode = true;
+   // PGPreconditioner prec(latent_k, latent, entropy, alpha);
    MUMPSMonoSolver lin_solver(comm);
    NewtonSolver solver(comm);
-   solver.SetSolver(lin_solver);
-   solver.SetOperator(bnlf);
    IterativeSolver::PrintLevel print_level;
    solver.SetPrintLevel(print_level);
    solver.SetAbsTol(1e-09);
@@ -204,9 +193,7 @@ int main(int argc, char *argv[])
    glvis.Append(u, "x", "Rjclmm");
    glvis.Append(x_mapped_cf, visspace, "|U(psi)|", "RjclQmm");
    glvis.Append(gradu_norm_cf, visspace, "|gradu|", "RjclQmm");
-   glvis.Append(active_set, visspace, "active set, |lambda| < tol",
-                "Rjclmmpp\nautoscale off\nvaluerange 0 1");
-   glvis.Update();
+   glvis.Append(active_set, visspace, "active set", "Rjclmm autoscale off valuerange 0 1");
 
    real_t lambda_diff = infinity();
    for (int i=0; i<100; i++)
@@ -217,6 +204,16 @@ int main(int argc, char *argv[])
       latent_k = latent;
       latent_k.SetTrueVector();
 
+
+      // GMRESSolver lin_solver(comm);
+      // lin_solver.SetPreconditioner(prec);
+      // lin_solver.SetRelTol(1e-8*alpha);
+      // lin_solver.SetAbsTol(1e-8*alpha);
+      // lin_solver.SetMaxIter(1e05);
+      // lin_solver.SetPrintLevel(2);
+      // lin_solver.iterative_mode = true;
+      solver.SetSolver(lin_solver);
+      solver.SetOperator(bnlf);
       solver.Mult(rhs, x_and_latent);
       if (!solver.GetConverged())
       {
@@ -225,8 +222,8 @@ int main(int argc, char *argv[])
          break;
       }
 
-      u.SetFromTrueVector();
-      latent.SetFromTrueVector();
+      u.SetFromTrueDofs(x_and_latent.GetBlock(0));
+      latent.SetFromTrueDofs(x_and_latent.GetBlock(1));
 
       glvis.Update();
 

@@ -110,11 +110,7 @@ int main(int argc, char *argv[])
    for (int i=0; i<numMaterials; i++)
    {
       psi_i[i].MakeRef(&ctrl_scalar_fes, psi, i*ctrl_scalar_fes.GetVSize());
-      psi_i[i].MakeTRef(&ctrl_scalar_fes, psi.GetTrueVector(),
-                        i*ctrl_scalar_fes.GetTrueVSize());
       feta_i[i].MakeRef(&fltr_scalar_fes, feta, i*fltr_scalar_fes.GetVSize());
-      feta_i[i].MakeTRef(&fltr_scalar_fes, feta.GetTrueVector(),
-                         i*fltr_scalar_fes.GetTrueVSize());
    }
 
    DifferentiableCoefficient eta_cf(entropy);

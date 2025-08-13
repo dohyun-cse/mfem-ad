@@ -117,16 +117,13 @@ int main(int argc, char *argv[])
    ParGridFunction psik(lambda);
    psik = 0.0;
 
-   u.MakeTRef(&h1_fes, x_and_lambda.GetBlock(0).GetData());
-   u = 0.0; u.SetTrueVector();
-   lambda = 0.0; lambda.SetTrueVector();
+   u = 0.0; u.ParallelAssemble(x_and_lambda.GetBlock(0));
+   lambda = 0.0; lambda.ParallelAssemble(x_and_lambda.GetBlock(1));
 
-   lambda.MakeTRef(&l2_fes, x_and_lambda.GetBlock(1).GetData());
-   lambda = 0.0; lambda.SetTrueVector();
    FermiDiracEntropy entropy(0.0, 0.5);
    ADLambdaPGFunctional pg_functional(obj_energy, entropy, psik);
    DifferentiableCoefficient entropy_cf(entropy);
-   entropy_cf.AddInput(psik);
+   entropy_cf.AddInput(&psik);
    VectorCoefficient &x_mapped_cf = entropy_cf.Gradient();
    QuadratureFunction x_mapped(&visspace);
    x_mapped = 0.0;
@@ -185,8 +182,8 @@ int main(int argc, char *argv[])
          break;
       }
 
-      u.SetFromTrueVector();
-      lambda.SetFromTrueVector();
+      u.SetFromTrueDofs(x_and_lambda.GetBlock(0));
+      lambda.SetFromTrueDofs(x_and_lambda.GetBlock(1));
       psik.Add(alpha,lambda);
       psik.SetTrueVector();
       if (i > 0) { lambda_diff = lambda.ComputeL1Error(lambda_prev_cf); }

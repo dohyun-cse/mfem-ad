@@ -497,13 +497,9 @@ public:
                   "Expected " << n_input << ", got " << evaluator.val.GetBlock(0).Size());
    }
 
-   void ProcessParameters(ElementTransformation &Tr,
-                          const IntegrationPoint &ip) const override
+   void ProcessParameters(const BlockVector &x) const override
    {
-      MFEM_ASSERT(other != nullptr,
-                  "DiffEnergy: other is not set. Use SetTarget() to set it.");
-      energy.ProcessParameters(Tr, ip);
-      target = &evaluator.Eval(Tr, ip);
+      target = &x.GetBlock(0);
    }
 
    AD_IMPL(T, V, M, x,

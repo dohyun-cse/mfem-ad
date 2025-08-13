@@ -125,18 +125,16 @@ int main(int argc, char *argv[])
    ParGridFunction u(&primal_fes), psi(&latent_fes);
    ParGridFunction psik(psi);
 
-   u.MakeTRef(&primal_fes, x_and_psi.GetBlock(0).GetData());
-   u = 0.0; u.SetTrueVector();
+   u = 0.0; u.ParallelAssemble(x_and_psi.GetBlock(0));
 
-   psi.MakeTRef(&latent_fes, x_and_psi.GetBlock(1).GetData());
-   psi = 0.0; psi.SetTrueVector();
+   psi = 0.0; psi.ParallelAssemble(x_and_psi.GetBlock(1));
 
    FunctionCoefficient bound([](const Vector &x)
    { return 0.1 + 0.2*x[0] + 0.4*x[1]; });
    HellingerEntropy entropy(dim, &bound);
    ADPGFunctional pg_functional(obj_energy, entropy, psik);
    DifferentiableCoefficient entropy_cf(entropy);
-   entropy_cf.AddInput(psi);
+   entropy_cf.AddInput(&psi);
    VectorNormCoefficient x_mapped_cf(entropy_cf.Gradient());
    SumCoefficient active_set_cf(x_mapped_cf, bound, 1.0, -1.0);
    QuadratureFunction x_mapped(&visspace);
@@ -199,8 +197,8 @@ int main(int argc, char *argv[])
          break;
       }
 
-      u.SetFromTrueVector();
-      psi.SetFromTrueVector();
+      u.SetFromTrueDofs(x_and_psi.GetBlock(0));
+      psi.SetFromTrueDofs(x_and_psi.GetBlock(1));
       subtract(psi, psik, lambda);
       lambda *= 1.0 / pg_functional.GetAlpha();
       if (i > 0) { lambda_diff = lambda.ComputeL1Error(lambda_prev_cf, irs); }
