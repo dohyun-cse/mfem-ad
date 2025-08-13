@@ -1,6 +1,7 @@
 #pragma once
 #include "mfem.hpp"
 #include "ad_native.hpp"
+#include "tools.hpp"
 
 namespace mfem
 {
@@ -384,13 +385,20 @@ private:
    MatrixCoefficient &entropy_hessian_cf;
    IdentityMatrixCoefficient identity_cf;
    MatrixSumCoefficient entropy_prec_cf;
-   std::unique_ptr<HypreBoomerAMG> amg;
+   std::unique_ptr<HypreBoomerAMG> stiffness_prec;
+   std::unique_ptr<CGSolver> stiffness_solver;
    const Array<int> *offsets;
    Vector diag;
    Vector mass_diag;
    mutable Vector z;
    const HypreParMatrix *B;
-   ParBilinearForm inv_mass_form;
+   bool is_dg = true;
+   std::unique_ptr<BilinearForm> inv_mass_form;
+   std::unique_ptr<HypreParMatrix> inv_mass;
+   std::unique_ptr<BilinearForm> mass_form;
+   std::unique_ptr<HypreParMatrix> mass;
+   std::unique_ptr<CGSolver> mass_solver;
+   std::unique_ptr<HypreBoomerAMG> mass_prec;
 public:
    PGPreconditioner(ParGridFunction &psik,
                     ParGridFunction &psi,
@@ -403,31 +411,53 @@ public:
       , entropy_hessian_cf(entropy_cf.Hessian())
       , identity_cf(entropy.n_input)
       , entropy_prec_cf(entropy_hessian_cf, identity_cf, -1.0, -1.0)
-      , inv_mass_form(fes)
    {
-      entropy_cf.AddInput(psi);
-      inv_mass_form.AddDomainIntegrator(
-         new InverseIntegrator(
-            new VectorMassIntegrator(entropy_prec_cf)));
-      MFEM_VERIFY(fes->IsDGSpace(),
-                  "PGPreconditioner: Only works with DG spaces");
-      // entropy_cf.AddInput(psi);
-
-      // ParBilinearForm lumped_mass_form(fes);
-      // lumped_mass_form.AddDomainIntegrator(
-      //    new LumpedIntegrator(new VectorMassIntegrator));
-      // lumped_mass_form.Assemble();
-      // lumped_mass_form.Finalize();
-      // lumped_mass_form.SpMat().GetDiag(mass_diag);
+      entropy_cf.AddInput(&psi);
+      if ((is_dg = fes->IsDGSpace()))
+      {
+         inv_mass_form = NewBilinearForm(*fes);
+         inv_mass_form->AddDomainIntegrator(
+            new InverseIntegrator(
+               new VectorMassIntegrator(entropy_prec_cf)));
+      }
+      else
+      {
+         mass_form = NewBilinearForm(*fes);
+         mass_form->AddDomainIntegrator(
+            new VectorMassIntegrator(entropy_prec_cf));
+      }
    }
 
    void SetOperator(const Operator &op) override
    {
-      entropy_prec_cf.SetAlpha(-1.0 / alpha);
-      entropy_prec_cf.SetBeta(-1.0 / alpha/alpha);
-      inv_mass_form.Update();
-      inv_mass_form.Assemble();
-      inv_mass_form.Finalize();
+      // out << "PGPreconditioner: Setting operator" << std::endl;
+      if (is_dg)
+      {
+         entropy_prec_cf.SetAlpha(-1.0 / alpha);
+         entropy_prec_cf.SetBeta(-1.0 / alpha/alpha);
+         inv_mass_form->Update();
+         inv_mass_form->Assemble();
+         inv_mass_form->Finalize();
+         inv_mass.reset(static_cast<ParBilinearForm&>
+                        (*inv_mass_form).ParallelAssemble());
+      }
+      else
+      {
+         entropy_prec_cf.SetAlpha(1.0 / alpha);
+         entropy_prec_cf.SetBeta(1.0 / alpha/alpha);
+         // out << "Assembling mass form" << std::endl;
+         mass_form->Update();
+         auto * mat = mass_form->LoseMat();
+         if (mat) { delete mat; }
+         mass_form->Assemble();
+         mass_form->Finalize();
+         // out << "Serial Assembly Done" << std::endl;
+         mass.reset(static_cast<ParBilinearForm&>
+                    (*mass_form).ParallelAssemble());
+         // out << "Parallel Assembly Done" << std::endl;
+         mass_prec = std::make_unique<HypreBoomerAMG>(*mass);
+         mass_prec->SetPrintLevel(0);
+      }
       auto * blocks = dynamic_cast<const BlockOperator*>(&op);
       MFEM_VERIFY(blocks != nullptr, "Not a BlockOperator");
 
@@ -436,22 +466,14 @@ public:
 
       const HypreParMatrix * A = dynamic_cast<const HypreParMatrix*>(&blocks->GetBlock(0,0));
       MFEM_VERIFY(A != nullptr, "Not a HypreParMatrix");
-      amg = std::make_unique<HypreBoomerAMG>(*A);
-      amg->SetPrintLevel(0);
-      amg->SetMaxIter(100);
-
-      B = dynamic_cast<const HypreParMatrix*>(&blocks->GetBlock(1,0));
-      MFEM_VERIFY(B != nullptr, "Not a HypreParMatrix");
-      // static_cast<const HypreParMatrix&>(blocks->GetBlock(1,1)).GetDiag(diag);
-      // diag.Add(-std::pow(alpha, -2.0), mass_diag);
-      // diag.Reciprocal();
-      // inv_mass_form.Assemble();
-
-      // z.SetSize(A->Height());
-
+      stiffness_prec = std::make_unique<HypreBoomerAMG>(*A);
+      stiffness_prec->SetPrintLevel(0);
+      // out << "PGPreconditioner: Operator setting Done" << std::endl;
    }
+
    void Mult(const Vector &b, Vector &x) const override
    {
+      // out << "PGPreconditioner: Mult" << std::endl;
       MFEM_VERIFY(b.Size() == x.Size(),
                   "PGPreconditioner: b and x must have the same size");
       MFEM_VERIFY(offsets->Last() == b.Size(),
@@ -465,19 +487,19 @@ public:
       Vector &x_primal = xblock.GetBlock(0);
       Vector &x_dual = xblock.GetBlock(1);
 
-      amg->Mult(b_primal, x_primal);
-      // z = b_dual;
-      // B->AddMult(x_primal, z, -1.0);
-      inv_mass_form.Mult(b_dual, x_dual);
-      // x_dual *= diag;
-
-      // // inv_mass_form.Mult(b_dual, x_dual);
-      // x_dual = b_dual;
-      // x_dual *= diag;
-      //
-      // z = b_primal;
-      // B->AddMult(x_dual, z, -1.0);
-      // amg->Mult(z, x_primal);
+      // out << "PGPreconditioner: Primal" << std::endl;
+      stiffness_prec->Mult(b_primal, x_primal);
+      // out << "PGPreconditioner: Dual" << std::endl;
+      if (is_dg)
+      {
+         inv_mass->Mult(b_dual, x_dual);
+      }
+      else
+      {
+         mass_prec->Mult(b_dual, x_dual);
+         x_dual.Neg();
+      }
+      // out << "PGPreconditioner: Mult Done" << std::endl;
    }
 };
 
