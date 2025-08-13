@@ -64,10 +64,14 @@ class GLVis
    std::vector<std::unique_ptr<QuadratureFunction>> owned_qfs;
    Array<Mesh *> meshes;
    Array<bool> parallel;
+   Array<int> myrank;
+   Array<int> nrrank;
    const char *hostname;
    const int port;
    int w, h, nrWinPerRow;
    bool secure;
+   void Append(GridFunction *gf, QuadratureFunction *qf,
+               std::string_view window_title, std::string_view keys);
 
 public:
 #ifdef MFEM_USE_GNUTLS
@@ -82,16 +86,20 @@ public:
         port(port), w(w), h(h), nrWinPerRow(nrWinPerRow),
         secure(secure_default) {}
 
-   void Append(GridFunction &gf, const char window_title[] = nullptr,
-               const char keys[] = nullptr);
-   void Append(QuadratureFunction &qf, const char window_title[] = nullptr,
-               const char keys[] = nullptr);
+   void Append(GridFunction &gf,
+               std::string_view window_title= {},
+               std::string_view keys= {})
+   { Append(&gf, nullptr, window_title, keys); }
+   void Append(QuadratureFunction &qf,
+               std::string_view window_title= {},
+               std::string_view keys= {})
+   { Append(nullptr, &qf, window_title, keys); }
    void Append(Coefficient &cf, QuadratureSpace &qs,
-               const char window_title[] = nullptr,
-               const char keys[] = nullptr);
+               std::string_view window_title= {},
+               std::string_view keys= {});
    void Append(VectorCoefficient &cf, QuadratureSpace &qs,
-               const char window_title[] = nullptr,
-               const char keys[] = nullptr);
+               std::string_view window_title= {},
+               std::string_view keys= {});
    void Update();
 
    GridFunction& GetGridFunction(int i)

@@ -110,146 +110,107 @@ void TableLogger::SaveWhenPrint(std::string filename, std::ios::openmode mode)
    }
 }
 
-void GLVis::Append(GridFunction &gf, const char window_title[],
-                   const char keys[])
+void GLVis::Append(GridFunction *gf, QuadratureFunction *qf,
+                   std::string_view window_title, std::string_view keys)
 {
-   qfkey_has_Q.Append(false);
-   cfs.Append(nullptr);
-   vcfs.Append(nullptr);
+   MFEM_VERIFY((gf == nullptr && qf != nullptr)
+               || (gf != nullptr && qf == nullptr),
+               "Either GridFunction or QuadratureFunction must be provided, "
+               "but not both.");
+   bool is_gf = gf != nullptr;
    sockets.push_back(std::make_unique<socketstream>(hostname, port, secure));
-   owned_qfs.resize(sockets.size());
    socketstream &socket = *sockets.back();
-   if (!socket.is_open())
+   if (!socket.is_open() || !socket.good())
    {
       return;
    }
-   Mesh *mesh = gf.FESpace()->GetMesh();
-   gfs.Append(&gf);
-   qfs.Append(nullptr);
-   meshes.Append(mesh);
    socket.precision(8);
-#ifdef MFEM_USE_MPI
-   if (dynamic_cast<ParGridFunction*>(&gf))
-   {
-      parallel.Append(true);
-      socket << "parallel " << Mpi::WorldSize() << " " << Mpi::WorldRank() << "\n";
-   }
-   else
-   {
-      parallel.Append(false);
-   }
-#endif
-   socket << "solution\n" << *mesh << gf;
-   if (keys)
-   {
-      socket << "keys " << keys << std::endl;
-   }
-   if (window_title)
-   {
-      socket << "window_title '" << window_title <<"'\n";
-   }
-   int row = (sockets.size() - 1) / nrWinPerRow;
-   int col = (sockets.size() - 1) % nrWinPerRow;
-   socket << "window_geometry "
-          << w*col << " " << h*row << " "
-          << w << " " << h << "\n";
-   socket << std::flush;
-   if (parallel.Last())
-   {
-#ifdef MFEM_USE_MPI
-      MPI_Barrier(MPI_COMM_WORLD);
-#endif
-   }
-}
+   gfs.Append(gf);
+   qfs.Append(qf);
 
-void GLVis::Append(QuadratureFunction &qf, const char window_title[],
-                   const char keys[])
-{
-   bool hasQ=false;
-   for (int i=0; keys[i] != '\0' && keys[i] != '\n'; i++)
-   {
-      if (keys[i] == 'Q') { hasQ=true; break; }
-   }
-   qfkey_has_Q.Append(hasQ);
+   Mesh *mesh;
+   if (is_gf) { mesh = gf->FESpace()->GetMesh(); }
+   else { mesh = qf->GetSpace()->GetMesh(); }
+   meshes.Append(mesh);
+
    cfs.Append(nullptr);
    vcfs.Append(nullptr);
-   sockets.push_back(std::make_unique<socketstream>(hostname, port, secure));
-   owned_qfs.resize(sockets.size());
-   socketstream &socket = *sockets.back();
-   if (!socket.is_open())
-   {
-      return;
-   }
-   Mesh *mesh = qf.GetSpace()->GetMesh();
-   qfs.Append(&qf);
-   gfs.Append(nullptr);
-   meshes.Append(mesh);
-   socket.precision(8);
+
+   parallel.Append(false);
+   myrank.Append(0);
+   nrrank.Append(1);
 #ifdef MFEM_USE_MPI
-   if (dynamic_cast<ParMesh*>(mesh))
+   if (ParMesh *pmesh = dynamic_cast<ParMesh*>(mesh))
    {
-      parallel.Append(true);
-      socket << "parallel " << Mpi::WorldSize() << " " << Mpi::WorldRank() << "\n";
-   }
-   else
-   {
-      parallel.Append(false);
+      parallel.Last() = true;
+      myrank.Last() = pmesh->GetMyRank();
+      nrrank.Last() = pmesh->GetNRanks();
+      MPI_Barrier(pmesh->GetComm());
+      socket << "parallel " << nrrank.Last() << " " << myrank.Last() <<
+                "\n";
    }
 #endif
-   socket << "quadrature\n" << *mesh << qf;
-   if (keys)
+   socket << "solution\n" << *mesh;
+
+   if (is_gf) { socket << *gf; }
+   else { socket << *qf; }
+
+   if (!keys.empty())
    {
-      socket << "keys " << keys << std::endl;
+      socket << "keys " << keys << " ";
+      bool hasQ=false;
+      if (!is_gf)
+      {
+         size_t end_pos = std::min(keys.find(' '), keys.find('\n'));
+         std::string_view actual_keys = keys.substr(0, end_pos);
+         if (actual_keys.find('Q') != std::string_view::npos) { hasQ = true; }
+      }
+      qfkey_has_Q.Append(hasQ);
    }
-   if (window_title)
+   if (!window_title.empty())
    {
-      socket << "window_title '" << window_title <<"'\n";
+      socket << "window_title '" << window_title <<"' ";
    }
    int row = (sockets.size() - 1) / nrWinPerRow;
    int col = (sockets.size() - 1) % nrWinPerRow;
-   socket << "window_geometry "
+   socket << " window_geometry "
           << w*col << " " << h*row << " "
-          << w << " " << h << "\n";
-   socket << std::flush;
-   if (parallel.Last())
-   {
-#ifdef MFEM_USE_MPI
-      MPI_Barrier(MPI_COMM_WORLD);
-#endif
-   }
+          << w << " " << h;
+   socket << std::endl;
 }
 
 void GLVis::Append(Coefficient &cf, QuadratureSpace &qs,
-                   const char window_title[],
-                   const char keys[])
+                   std::string_view window_title,
+                   std::string_view keys)
 {
-   auto qf = std::make_unique<QuadratureFunction>(&qs);
-   Append(*qf, window_title, keys);
+   owned_qfs.push_back(std::make_unique<QuadratureFunction>(qs));
+   Append(nullptr, owned_qfs.back().get(), window_title, keys);
    cfs.Last() = &cf;
-   owned_qfs.back() = std::move(qf);
 }
+
 void GLVis::Append(VectorCoefficient &cf, QuadratureSpace &qs,
-                   const char window_title[],
-                   const char keys[])
+                   std::string_view window_title,
+                   std::string_view keys)
 {
-   auto qf = std::make_unique<QuadratureFunction>(&qs);
-   Append(*qf, window_title, keys);
+   owned_qfs.push_back(std::make_unique<QuadratureFunction>(qs, cf.GetVDim()));
+   Append(nullptr, owned_qfs.back().get(), window_title, keys);
    vcfs.Last() = &cf;
-   owned_qfs.back() = std::move(qf);
 }
 
 void GLVis::Update()
 {
    for (int i=0; i<sockets.size(); i++)
    {
-      if (!sockets[i]->is_open() && !sockets[i]->good())
+      if (!sockets[i]->is_open() || !sockets[i]->good())
       {
          continue;
       }
 #ifdef MFEM_USE_MPI
       if (parallel[i])
       {
-         *sockets[i] << "parallel " << Mpi::WorldSize() << " " << Mpi::WorldRank() <<
+         MPI_Comm comm = static_cast<ParMesh*>(meshes[i])->GetComm();
+         MPI_Barrier(comm);
+         *sockets[i] << "parallel " << nrrank[i] << " " << myrank[i] <<
                         "\n";
       }
 #endif
@@ -259,23 +220,27 @@ void GLVis::Update()
       }
       else if (qfs[i])
       {
-         if (cfs[i]) { cfs[i]->Project(*qfs[i]); }
-         if (vcfs[i]) { vcfs[i]->Project(*qfs[i]); }
+         if (cfs[i] != nullptr) { cfs[i]->Project(*qfs[i]); }
+         else if (vcfs[i] != nullptr) { vcfs[i]->Project(*qfs[i]); }
+         std::cout << qfs[i]->CheckFinite() << std::endl;
+         MFEM_VERIFY(qfs[i]->CheckFinite() == 0,
+                     "QuadratureFunction has non-finite entries");
          *sockets[i] << "quadrature\n" << *meshes[i] << *qfs[i];
          // NOTE: GLVis seems to have a bug with Q key
          // It does not restore interpolation type after update.
          // So, we cycle through all interpolation types to restore it.
-         if (qfkey_has_Q[i]) { *sockets[i] << "keys QQQ\n"; }
+         if (qfkey_has_Q[i]) { *sockets[i] << "keys 'QQQ'"; }
       }
       else
       {
          MFEM_ABORT("Unknown data type. See, GLVis::Update");
       }
-      *sockets[i] << std::flush;
+      *sockets[i] << std::endl;
       if (parallel[i])
       {
 #ifdef MFEM_USE_MPI
-         MPI_Barrier(MPI_COMM_WORLD);
+         MPI_Comm comm = static_cast<ParMesh*>(meshes[i])->GetComm();
+         MPI_Barrier(comm);
 #endif
       }
    }
