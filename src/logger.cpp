@@ -185,6 +185,13 @@ bool GLVis::Append(GridFunction *gf, QuadratureFunction *qf,
           << w*col << " " << h*row << " "
           << w << " " << h << "\n";
    socket << std::flush;
+#ifdef MFEM_USE_MPI
+   if (parallel.Last())
+   {
+      MPI_Comm comm = static_cast<ParMesh*>(meshes.Last())->GetComm();
+      MPI_Barrier(comm);
+   }
+#endif
    return true;
 }
 
