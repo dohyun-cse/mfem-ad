@@ -77,6 +77,17 @@ public:
    }
    // Add a parameter to the evaluator
    int Add(param_t param);
+   int Add(Vector &v)
+   {
+      if (dynamic_cast<GridFunction*>(&v))
+      {
+         MFEM_WARNING("Adding GridFunction itself, instead of its pointer. "
+                      "This result in the whole GridFunction value will be used at each quadrature point, "
+                      "which is likely not what you want. "
+                      "Use Add(const GridFunction*) instead.");
+      }
+      return Add((param_t)v);
+   }
    // Replace a parameter at index i with a new parameter
    // The output size of param should match the size of the old parameter
    void Replace(size_t i, param_t param);
