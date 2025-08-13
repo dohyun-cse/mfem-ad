@@ -56,25 +56,50 @@ int Evaluator::GetSize(const param_t &param)
       return 0;
    }, param);
 }
-int Evaluator::Add(param_t param)
+
+Evaluator::~Evaluator()
+{
+   for (int i=0; i<params.size(); i++)
+   {
+      if (owns[i])
+      {
+         std::visit([](auto &arg)
+         {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr (std::is_pointer_v<T>)
+            {
+               delete arg;
+            }
+         }, params[i]);
+      }
+   }
+}
+int Evaluator::Add(param_t param, bool eval_owns)
 {
    int idx = params.size();
    params.push_back(param);
    offsets.Append(offsets.Last() + GetSize(param));
    val.Update(offsets);
+   owns.Append(eval_owns);
    std::visit([&](auto arg)
    {
       using T = std::decay_t<decltype(arg)>;
       if constexpr (std::is_same_v<T, real_t>)
       {
+         MFEM_VERIFY(eval_owns==false,
+                     "Evaluator::Add: real_t parameter cannot own the value");
          val.GetBlock(idx) = arg;
       }
       if constexpr (std::is_same_v<T, Vector>)
       {
+         MFEM_VERIFY(eval_owns==false,
+                     "Evaluator::Add: real_t parameter cannot own the value");
          val.GetBlock(idx) = arg;
       }
       if constexpr (std::is_same_v<T, DenseMatrix>)
       {
+         MFEM_VERIFY(eval_owns==false,
+                     "Evaluator::Add: real_t parameter cannot own the value");
          Vector v(arg.GetData(), arg.TotalSize());
          val.GetBlock(idx) = v;
       }

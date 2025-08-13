@@ -68,6 +68,7 @@ private:
 
 public:
    mutable BlockVector val;
+   mutable Array<bool> owns;
    Evaluator(): offsets{0} {}
    Evaluator(int capacity)
       : offsets{0}
@@ -75,13 +76,14 @@ public:
       val.SetSize(capacity);
       val.SetSize(0);
    }
+   virtual ~Evaluator();
    // Add a parameter to the evaluator
-   int Add(param_t param);
+   int Add(param_t param, bool eval_owns = false);
    int Add(Vector &v)
    {
       if (dynamic_cast<GridFunction*>(&v))
       {
-         MFEM_WARNING("Adding GridFunction itself, instead of its pointer. "
+         MFEM_WARNING("Adding GridFunction by value, instead of its pointer. "
                       "This result in the whole GridFunction value will be used at each quadrature point, "
                       "which is likely not what you want. "
                       "Use Add(const GridFunction*) instead.");
