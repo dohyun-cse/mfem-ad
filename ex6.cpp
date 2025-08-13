@@ -83,16 +83,6 @@ int main(int argc, char *argv[])
    is_bdr_ess_u = 1; is_bdr_ess_psi = 0;
    Array<Array<int>*> is_bdr_ess{&is_bdr_ess_u, &is_bdr_ess_psi};
 
-   DamProblem2D obj_functional(1.0, 1.0);
-   ConstantCoefficient lower_bound(0.0);
-   ShannonEntropy entropy(lower_bound);
-   ADPGFunctional pg_functional(obj_functional, entropy);
-
-   ParBlockNonlinearForm nlf(fespaces);
-   nlf.AddDomainIntegrator(new
-                           ADBlockNonlinearFormIntegrator<ADEval::GRAD | ADEval::VALUE, ADEval::VALUE>
-                           (pg_functional));
-
    Array<int> offsets = GetOffsets(fespaces);
    Array<int> toffsets = GetTrueOffsets(fespaces);
    BlockVector x(offsets), b(offsets);
@@ -103,7 +93,15 @@ int main(int argc, char *argv[])
                    psi_k(&l2_fes);
    u.MakeTRef(&h1_fes, x, offsets[0]); psi.MakeTRef(&l2_fes, x, offsets[1]);
    u.SetFromTrueVector(); psi.SetFromTrueVector();
-   pg_functional.SetPrevLatent(psi_k);
+
+   DamProblem2D obj_functional(1.0, 1.0);
+   ShannonEntropy entropy(0.0);
+   ADPGFunctional pg_functional(obj_functional, entropy, psi_k);
+
+   ParBlockNonlinearForm nlf(fespaces);
+   nlf.AddDomainIntegrator(new
+                           ADBlockNonlinearFormIntegrator<ADEval::GRAD | ADEval::VALUE, ADEval::VALUE>
+                           (pg_functional));
 
    ParLinearForm load(&h1_fes, b.GetData());
    load.AddDomainIntegrator(new DomainLFIntegrator(load_cf));

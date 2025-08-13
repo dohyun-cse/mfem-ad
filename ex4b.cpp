@@ -123,9 +123,7 @@ int main(int argc, char *argv[])
 
    lambda.MakeTRef(&l2_fes, x_and_lambda.GetBlock(1).GetData());
    lambda = 0.0; lambda.SetTrueVector();
-   ConstantCoefficient lower_bound(0.0);
-   ConstantCoefficient upper_bound(0.5);
-   FermiDiracEntropy entropy(lower_bound, upper_bound);
+   FermiDiracEntropy entropy(0.0, 0.5);
    ADLambdaPGFunctional pg_functional(obj_energy, entropy, psik);
    DifferentiableCoefficient entropy_cf(entropy);
    entropy_cf.AddInput(psik);

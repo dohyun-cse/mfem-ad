@@ -133,7 +133,7 @@ int main(int argc, char *argv[])
 
    FunctionCoefficient bound([](const Vector &x)
    { return 0.1 + 0.2*x[0] + 0.4*x[1]; });
-   HellingerEntropy entropy(dim, bound);
+   HellingerEntropy entropy(dim, &bound);
    ADPGFunctional pg_functional(obj_energy, entropy, psik);
    DifferentiableCoefficient entropy_cf(entropy);
    entropy_cf.AddInput(psi);
