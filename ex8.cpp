@@ -20,20 +20,6 @@ struct GradientObstacleEnergy : public ADFunction
       return x*x*0.5;
    });
 };
-class VectorNormCoefficient : public Coefficient
-{
-private:
-   VectorCoefficient &vc;
-   Vector v;
-public:
-   VectorNormCoefficient(VectorCoefficient &vc): vc(vc), v(vc.GetVDim()) {}
-   real_t Eval(ElementTransformation &T, const IntegrationPoint &ip) override
-   {
-      vc.Eval(v, T, ip);
-      return std::sqrt(v*v);
-   }
-};
-
 class BooleanCoefficient : public Coefficient
 {
 private:
@@ -204,14 +190,8 @@ int main(int argc, char *argv[])
       latent_k = latent;
       latent_k.SetTrueVector();
 
+      latent.Add(alpha, lambda);
 
-      // GMRESSolver lin_solver(comm);
-      // lin_solver.SetPreconditioner(prec);
-      // lin_solver.SetRelTol(1e-8*alpha);
-      // lin_solver.SetAbsTol(1e-8*alpha);
-      // lin_solver.SetMaxIter(1e05);
-      // lin_solver.SetPrintLevel(2);
-      // lin_solver.iterative_mode = true;
       solver.SetSolver(lin_solver);
       solver.SetOperator(bnlf);
       solver.Mult(rhs, x_and_latent);

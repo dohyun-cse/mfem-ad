@@ -20,19 +20,6 @@ struct GradientObstacleEnergy : public ADFunction
       return x*x*0.5;
    });
 };
-class VectorNormCoefficient : public Coefficient
-{
-private:
-   VectorCoefficient &vc;
-   Vector v;
-public:
-   VectorNormCoefficient(VectorCoefficient &vc): vc(vc), v(vc.GetVDim()) {}
-   real_t Eval(ElementTransformation &T, const IntegrationPoint &ip) override
-   {
-      vc.Eval(v, T, ip);
-      return v.Norml2();
-   }
-};
 
 
 int main(int argc, char *argv[])

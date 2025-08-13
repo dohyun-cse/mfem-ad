@@ -197,5 +197,19 @@ inline Array<int> GetTrueOffsets(const Array<FiniteElementSpace*> &fespaces)
    return std::move(offsets);
 }
 
+class VectorNormCoefficient : public Coefficient
+{
+private:
+   VectorCoefficient &vc;
+   Vector v;
+public:
+   VectorNormCoefficient(VectorCoefficient &vc): vc(vc), v(vc.GetVDim()) {}
+   real_t Eval(ElementTransformation &T, const IntegrationPoint &ip) override
+   {
+      vc.Eval(v, T, ip);
+      return std::sqrt(v*v);
+   }
+};
+
 
 };
