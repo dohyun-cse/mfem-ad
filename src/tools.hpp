@@ -211,5 +211,19 @@ public:
    }
 };
 
+class BooleanCoefficient : public Coefficient
+{
+private:
+   Coefficient &cf;
+   std::function<bool(real_t)> func;
+public:
+   BooleanCoefficient(Coefficient &cf, std::function<bool(real_t)> func)
+      : cf(cf), func(func) {}
+   real_t Eval(ElementTransformation &T, const IntegrationPoint &ip) override
+   {
+      return func(cf.Eval(T, ip));
+   }
+};
+
 
 };

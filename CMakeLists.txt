@@ -31,12 +31,7 @@ set(EXECUTABLES
   ex2
   ex3
   ex4
-  ex4b
   ex5
-  ex6
-  ex7
-  ex8
-  ex9
 )
 # Again, if an executable depends on a specific library, put them like this:
 # set(EXE_DEP_myexe dependent_lib1 dependent_lib2)

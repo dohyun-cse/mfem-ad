@@ -9,33 +9,8 @@
 using namespace std;
 using namespace mfem;
 
-void Print(DenseMatrix &H, bool last_linebreak=true)
-{
-   for (int i = 0; i < H.Height(); i++)
-   {
-      for (int j = 0; j < H.Width(); j++)
-      {
-         cout << H(i, j) << " ";
-      }
-      cout << ";";
-      if (i < H.Height() - 1 || last_linebreak)
-      {
-         cout << "\n";
-      }
-   }
-   cout << std::flush;
-}
-
-void Print(DenseTensor &H)
-{
-   for (int k=0; k<H.SizeK(); k++)
-   {
-      out << "{ ";
-      Print(H(k), false);
-      out << " }\n";
-   }
-   cout << std::flush;
-}
+void Print(DenseMatrix &H, bool last_linebreak=true);
+void Print(DenseTensor &H);
 
 struct MyADFunction : public ADFunction
 {
@@ -44,6 +19,7 @@ public:
 
    AD_IMPL(T, V, M, x, return sin(x(0))*exp(x(1)) + pow(x(2), 3.0);)
 };
+
 struct MyADVecFunction : public ADVectorFunction
 {
 public:
@@ -184,4 +160,32 @@ int main(int argc, char *argv[])
    }
 
    return 0;
+}
+
+void Print(DenseMatrix &H, bool last_linebreak)
+{
+   for (int i = 0; i < H.Height(); i++)
+   {
+      for (int j = 0; j < H.Width(); j++)
+      {
+         cout << H(i, j) << " ";
+      }
+      cout << ";";
+      if (i < H.Height() - 1 || last_linebreak)
+      {
+         cout << "\n";
+      }
+   }
+   cout << std::flush;
+}
+
+void Print(DenseTensor &H)
+{
+   for (int k=0; k<H.SizeK(); k++)
+   {
+      out << "{ ";
+      Print(H(k), false);
+      out << " }\n";
+   }
+   cout << std::flush;
 }

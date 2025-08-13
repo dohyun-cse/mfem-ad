@@ -1,89 +1,26 @@
-/// Remap objectives
-///
-/// TODO:
-/// It is very tidius to manage artifacts when adding/subtracting...
-/// There must be a better design :(
-/// See, MakeConstraints and operators in ADFunction.
+/// Example 4: AD Obstacle Problem with PG
 #include "mfem.hpp"
 #include <fstream>
 #include <iostream>
 
 #include "src/logger.hpp"
-#include "src/pg.hpp"
-#include "src/dof_pg.hpp"
+#include "src/ad_intg.hpp"
 #include "src/tools.hpp"
-#include <cmath>
+#include "src/pg.hpp"
 
 using namespace std;
 using namespace mfem;
 
-struct VolumeFunctional : public ADFunction
-{
-   VolumeFunctional(int n_input) : ADFunction(n_input) {}
-   AD_IMPL(T, V, M, x, return x[0];);
-};
 
-struct MassFunctional : public ADFunction
+struct GradientObstacleEnergy : public ADFunction
 {
-   MassFunctional(int n_input) : ADFunction(n_input) {}
-   AD_IMPL(T, V, M, x, return x[0]*x[1];);
-};
-
-struct InternalEnergyFunctional : public ADFunction
-{
-   InternalEnergyFunctional(int n_input) : ADFunction(n_input) {}
-   AD_IMPL(T, V, M, x, return x[0]*x[1]*x[2];);
-};
-
-struct TotalEnergyFunctional : public ADFunction
-{
-   TotalEnergyFunctional(int n_input) : ADFunction(n_input) {}
+   GradientObstacleEnergy(int dim) : ADFunction(dim) {}
    AD_IMPL(T, V, M, x,
    {
-      T result = T();
-      for (int i=3; i<x.Size(); i++)
-      {
-         result += x[i]*x[i];
-      }
-      result = result*0.5;
-      result = result + x[2];
-      result = result*(x[0]*x[1]);
-      return result;
+      return x*x*0.5;
    });
 };
 
-struct MomentumFunctional : public ADFunction
-{
-   int comp;
-   MomentumFunctional(int n_input, int comp) : ADFunction(n_input), comp(comp) {}
-   AD_IMPL(T, V, M, x, return x[0]*x[1]*x[3+comp];);
-};
-
-
-enum RemapConType
-{
-   IND, IND_RHO, IND_RHO_E, HYDRO
-};
-std::vector<std::unique_ptr<ADFunction>>
-MakeConstraints(int con_type, int dim=-1)
-{
-   std::vector<std::unique_ptr<ADFunction>> constraints;
-   int numVars;
-   if (con_type < HYDRO) { numVars = con_type; }
-   else { numVars = con_type + dim - 1; }
-
-   if (con_type >= IND) { constraints.push_back(std::make_unique<VolumeFunctional>(numVars)); }
-   if (con_type >= IND_RHO) { constraints.push_back(std::make_unique<MassFunctional>(numVars)); }
-   if (con_type >= IND_RHO_E) { constraints.push_back(std::make_unique<InternalEnergyFunctional>(numVars)); }
-   if (con_type == HYDRO)
-   {
-      for (int d=0; d<dim; d++)
-      {
-         constraints.push_back(std::make_unique<MomentumFunctional>(numVars, d));
-      }
-   }
-   return std::move(constraints);
-}
 
 int main(int argc, char *argv[])
 {
@@ -92,9 +29,17 @@ int main(int argc, char *argv[])
    int myid = Mpi::WorldRank();
    Hypre::Init();
    MPI_Comm comm = MPI_COMM_WORLD;
+   // file name to be saved
+   std::stringstream filename;
+   filename << "ad-obstacle-";
+   int rule_type = PGStepSizeRule::RuleType::CONSTANT;
+   real_t max_alpha = 1e06;
+   real_t alpha0 = 1.0;
+   real_t ratio = 1.0;
+   real_t ratio2 = 1.0;
 
    int order = 2;
-   int ref_levels = 2;
+   int ref_levels = 3;
    bool visualization = false;
    bool paraview = false;
 
@@ -102,6 +47,16 @@ int main(int argc, char *argv[])
    args.AddOption(&order, "-o", "--order",
                   "Finite element polynomial degree");
    args.AddOption(&ref_levels, "-r", "--ref", "Refinement levels");
+   args.AddOption(&rule_type, "-rule", "--rule",
+                  "Step size rule type: 0=CONSTANT, 1=POLY, 2=EXP, 3=DOUBLE_EXP");
+   args.AddOption(&max_alpha, "-ma", "--max-alpha",
+                  "Maximum step size for PG method");
+   args.AddOption(&alpha0, "-a0", "--alpha0",
+                  "Initial step size for PG method");
+   args.AddOption(&ratio, "-ar", "--alpha-ratio",
+                  "Ratio for step size rule (POLY, EXP, DOUBLE_EXP)");
+   args.AddOption(&ratio2, "-ar2", "--alpha-ratio2",
+                  "Second ratio for DOUBLE_EXP step size rule");
    args.AddOption(&visualization, "-vis", "--visualization",
                   "-no-vis", "--no-visualization",
                   "Enable visualization, default is false");
@@ -111,140 +66,96 @@ int main(int argc, char *argv[])
    args.ParseCheck();
    if (myid != 0) { out.Disable(); }
 
+   PGStepSizeRule alpha_rule(rule_type, alpha0, max_alpha, ratio, ratio2);
+
    // Mesh mesh = rhs_fun_circle
    Mesh ser_mesh = Mesh::MakeCartesian2D(10, 10,
-                                         Element::QUADRILATERAL);
+                                         Element::TRIANGLE);
    const int dim = ser_mesh.Dimension();
    for (int i = 0; i < ref_levels; i++)
    {
       ser_mesh.UniformRefinement();
    }
    ParMesh mesh(MPI_COMM_WORLD, ser_mesh);
-   real_t domain_volume = 0.0;
-   for (int i=0; i<mesh.GetNE(); i++) { domain_volume += mesh.GetElementVolume(i); }
 
-   L2_FECollection l2_fec(order, dim);
-   H1_FECollection h1_fec(order, dim);
-
-   QuadratureSpace qspace(&mesh, order);
-   const IntegrationRule &ir = qspace.GetIntRule(0);
-   // Convert QuadratureSpace to ParFiniteElementSpace
-   // shapes and nodes will not be used. only indexing purpose
-   auto qfespace_and_fec = QSpaceToFESpace(qspace);
-   ParFiniteElementSpace &qf_fes = static_cast<ParFiniteElementSpace&>
-                                   (*std::get<0>(qfespace_and_fec));
-   MFEM_VERIFY(qspace.GetSize() == qf_fes.GetTrueVSize(),
-               "QuadratureSpace and ParFiniteElementSpace sizes differ: "
-               << qspace.GetSize() << " != " << qf_fes.GetTrueVSize()
-              );
-   ParFiniteElementSpace l2_fes(&mesh, &l2_fec);
-   ParFiniteElementSpace h1_fes(&mesh, &h1_fec);
-
-   Array<ParFiniteElementSpace*> fespaces{&qf_fes, &qf_fes, &l2_fes};
-   for (int i=0; i<dim; i++)
+   const int numBdrAttr = mesh.bdr_attributes.Max();
+   Array<int> is_bdr_ess1(numBdrAttr);
+   is_bdr_ess1 = 1;
+   Array<int> is_bdr_ess2(numBdrAttr);
+   is_bdr_ess2 = 0;
+   Array<Array<int>*> is_bdr_ess{&is_bdr_ess1, &is_bdr_ess2};
+   FunctionCoefficient load_cf([](const Vector &x)
    {
-      fespaces.Append(&h1_fes);
-   }
-   HYPRE_BigInt glb_siz = 0;
-   for (int i=0; i<fespaces.Size(); i++)
+      return 15*std::pow(std::sin(M_PI*x[0]), 2.0);
+   });
+   GradientObstacleEnergy obj_energy(dim);
+
+   H1_FECollection primal_fec(order, dim);
+   H1_FECollection latent_fec(order-1, dim);
+   ParFiniteElementSpace primal_fes(&mesh, &primal_fec);
+   ParFiniteElementSpace latent_fes(&mesh, &latent_fec, dim);
+   QuadratureSpace visspace(&mesh, order+3);
+
+   Array<int> offsets(3);
+   offsets[0] = 0;
+   offsets[1] = primal_fes.GetTrueVSize();
+   offsets[2] = latent_fes.GetTrueVSize();
+   offsets.PartialSum();
+   BlockVector x_and_latent(offsets);
+   x_and_latent = 0.0;
+
+   ParGridFunction u(&primal_fes), latent(&latent_fes);
+   u.SetFromTrueDofs(x_and_latent.GetBlock(0));
+   latent.SetFromTrueDofs(x_and_latent.GetBlock(1));
+
+   ParGridFunction latent_k(latent);
+   latent_k = 0.0; latent_k.SetTrueVector();
+
+   FunctionCoefficient bound([](const Vector &x)
+   { return 0.1 + 0.2*x[0] + 0.4*x[1]; });
+   HellingerEntropy entropy(dim, &bound);
+   ADPGFunctional pg_functional(obj_energy, entropy, latent_k);
+   DifferentiableCoefficient entropy_cf(entropy);
+   entropy_cf.AddInput(&latent);
+   VectorNormCoefficient x_mapped_cf(entropy_cf.Gradient());
+
+   GradientGridFunctionCoefficient gradu_cf(&u);
+   VectorNormCoefficient gradu_norm_cf(gradu_cf);
+
+   ConstantCoefficient zero_cf(0.0);
+   ParGridFunction lambda(latent), lambda_prev(latent);
+   lambda = 0.0; lambda.SetTrueVector();
+   VectorGridFunctionCoefficient lambda_prev_cf(&lambda_prev);
+   VectorGridFunctionCoefficient lambda_cf(&lambda);
+   VectorNormCoefficient lambda_norm_cf(lambda_cf);
+   BooleanCoefficient active_set(lambda_norm_cf, [](real_t val) { return val < 1e-06; });
+
+   Array<ParFiniteElementSpace*> fespaces{&primal_fes, &latent_fes};
+   ParBlockNonlinearForm bnlf(fespaces);
+   constexpr ADEval u_mode = ADEval::GRAD;
+   constexpr ADEval psi_mode = ADEval::VALUE | ADEval::VECTOR;
+   bnlf.AddDomainIntegrator(
+      new ADBlockNonlinearFormIntegrator<u_mode, psi_mode>(
+         pg_functional)
+   );
+
+   BlockVector rhs(offsets);
+   ParLinearForm b(&primal_fes);
+   b.AddDomainIntegrator(new DomainLFIntegrator(load_cf));
+   b.Assemble();
+   b.ParallelAssemble(rhs.GetBlock(0));
+   rhs.GetBlock(1) = 0.0;
+
    {
-      auto fes_size = fespaces[i]->GlobalTrueVSize();
-      glb_siz += fes_size;
-      out << "FESpace " << i << ": " << fes_size << std::endl;
-   }
-   out << "Total global size: " << glb_siz << std::endl;
-   const int numVars = fespaces.Size();
-   Array<int> offsets = GetTrueOffsets(fespaces);
-   Array<ParFiniteElementSpace*> all_fespaces(fespaces);
-   all_fespaces.Append(fespaces);
-   Array<int> all_offsets = GetTrueOffsets(all_fespaces);
-   BlockVector x_and_psi(all_offsets);
-   BlockVector x_tvec(x_and_psi, offsets);
-   BlockVector psi_tvec(x_and_psi.GetData() + offsets[numVars], offsets);
-   BlockVector x0_tvec(offsets), latent_k_tvec(offsets);
-
-   VectorArrayCoefficient x0_cf(numVars);
-   std::vector<std::unique_ptr<GridFunction>> x(numVars);
-   std::vector<std::unique_ptr<GridFunction>> latent(numVars);
-
-   std::vector<std::unique_ptr<GridFunction>> x0(numVars);
-   std::vector<std::unique_ptr<GridFunction>> x_min(numVars);
-   std::vector<std::unique_ptr<GridFunction>> x_max(numVars);
-   std::vector<std::unique_ptr<GridFunction>> latent_k(numVars);
-   std::vector<std::unique_ptr<ADEntropy>> dual_entropies(numVars);
-   std::vector<int> primal_begin(numVars);
-   for (int i=0; i<numVars; i++)
-   {
-      auto fes = fespaces[i];
-
-      x0[i] = std::make_unique<ParGridFunction>(fes);
-      x0[i]->MakeTRef(fespaces[i], x0_tvec, offsets[i]);
-      (*x0[i]) = 0.5;
-      x0[i]->SetTrueVector();
-      latent_k[i] = std::make_unique<ParGridFunction>(fes);
-      latent_k[i]->MakeTRef(fespaces[i], latent_k_tvec, offsets[i]);
-      *latent_k[i] = 0.0;
-      latent_k[i]->SetTrueVector();
-
-      x_min[i] = std::make_unique<ParGridFunction>(fes);
-      *x_min[i] = 0.0; x_min[i]->SetTrueVector();
-      x_max[i] = std::make_unique<ParGridFunction>(fes);
-      *x_max[i] = 1.0; x_max[i]->SetTrueVector();
-
-      x0_cf.Set(i, new GridFunctionCoefficient(x0[i].get()), true);
-      dual_entropies[i] = std::make_unique<FermiDiracEntropy>(
-                             *x_min[i], *x_max[i]);
-
-      // x and latent's T-vector will be set later
-      x[i] = std::make_unique<ParGridFunction>(fes);
-      x[i]->MakeTRef(fespaces[i], x_tvec, offsets[i]);
-      *x[i] = *x0[i];
-      x[i]->SetTrueVector();
-      latent[i] = std::make_unique<ParGridFunction>(fes);
-      latent[i]->MakeTRef(fespaces[i], psi_tvec, offsets[i]);
-      *latent[i] = 0.0;
-      latent[i]->SetTrueVector();
-
-      primal_begin[i] = i;
+      Array<Vector*> rhs_list{&rhs.GetBlock(0), &rhs.GetBlock(1)};
+      bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
    }
 
-   std::vector<std::unique_ptr<ADFunction>> constraints
-      = MakeConstraints(HYDRO, dim);
-   MassEnergy bare_obj_energy(numVars);
-   DiffEnergy obj_energy(bare_obj_energy, &x0_cf);
-   ALFunctional AL_functional(obj_energy);
-   for (int i=0; i<constraints.size(); i++)
-   {
-      AL_functional.AddEqConstraint(*constraints[i]);
-   }
-   ADPGFunctional alpg_functional(AL_functional, dual_entropies, latent_k, primal_begin);
-
-   ParBlockNonlinearForm bnlf(all_fespaces);
-   // For ADDofPGnlfi, we only set primal mode
-   constexpr ADEval qfmode = ADEval::QVALUE;
-   constexpr ADEval gfmode = ADEval::VALUE;
-   switch (dim)
-   {
-      case 2:
-         bnlf.AddDomainIntegrator(new
-                                  ADDofPGNonlinearFormIntegrator<qfmode, qfmode, gfmode, gfmode, gfmode>
-                                  (alpg_functional, &ir));
-         break;
-      case 3:
-         bnlf.AddDomainIntegrator(new
-                                  ADDofPGNonlinearFormIntegrator<qfmode, qfmode, gfmode, gfmode, gfmode, gfmode>
-                                  (alpg_functional, &ir));
-         break;
-      default:
-         MFEM_ABORT("Unsupported dimension: " << dim);
-   }
-
-   MUMPSMonoSolver lin_solver(MPI_COMM_WORLD);
-   NewtonSolver solver(MPI_COMM_WORLD);
-   solver.SetSolver(lin_solver);
-   solver.SetOperator(bnlf);
+   real_t alpha;
+   // PGPreconditioner prec(latent_k, latent, entropy, alpha);
+   MUMPSMonoSolver lin_solver(comm);
+   NewtonSolver solver(comm);
    IterativeSolver::PrintLevel print_level;
-   print_level.Iterations().Summary();
    solver.SetPrintLevel(print_level);
    solver.SetAbsTol(1e-09);
    solver.SetRelTol(0.0);
@@ -252,57 +163,54 @@ int main(int argc, char *argv[])
    solver.iterative_mode = true;
 
    GLVis glvis("localhost", 19916, 400, 350, 4);
-   for (int i=0; i<numVars; i++)
-   {
-      glvis.Append(*x[i], std::to_string(i).c_str(), "Rjclmm");
-   }
+   glvis.Append(u, "x", "Rjclmm");
+   glvis.Append(x_mapped_cf, visspace, "|U(psi)|", "RjclQmm");
+   glvis.Append(gradu_norm_cf, visspace, "|gradu|", "RjclQmm");
+   glvis.Append(active_set, visspace, "active set", "Rjclmm autoscale off valuerange 0 1");
 
-   Vector con_target(numVars);
-   for (int i=0; i<numVars; i++)
+   real_t lambda_diff = infinity();
+   for (int i=0; i<100; i++)
    {
-      AL_functional.EqConstraintMode(i);
-      con_target[i] = bnlf.GetEnergy(x_and_psi) - 1e-06;
-      AL_functional.SetEqRHS(i, con_target[i]);
-   }
-   Vector &lambda = AL_functional.GetLambda();
-   real_t &mu = AL_functional.GetPenalty();
-   mu = 0.05;
+      alpha = alpha_rule.Get(i);
+      out << "PG iteration " << i + 1 << " with alpha=" << alpha << std::endl;
+      pg_functional.SetAlpha(alpha);
+      latent_k = latent;
+      latent_k.SetTrueVector();
 
-   Vector dummy;
-   AL_functional.ObjectiveMode();
-   // Initialize psi.
-   solver.Mult(dummy, x_and_psi);
-   for (int it_PG=0; it_PG<100; it_PG++)
-   {
-      out << "PG iteration " << it_PG + 1 << std::endl;
-      // update alpha
-      alpg_functional.SetAlpha(1.0);
-      // Set proximal center
-      latent_k_tvec = psi_tvec;
-      for (int i=0; i<numVars; i++) { latent_k[i]->SetFromTrueVector(); }
+      latent.Add(alpha, lambda);
 
-      for (int it_AL=0; it_AL<100; it_AL++)
+      solver.SetSolver(lin_solver);
+      solver.SetOperator(bnlf);
+      solver.Mult(rhs, x_and_latent);
+      if (!solver.GetConverged())
       {
-         out << "  AL iteration " << it_AL + 1 << std::endl;
-         // solve AL subproblem
-         AL_functional.ALMode();
-         solver.Mult(dummy, x_and_psi);
-         for (int i=0; i<numVars; i++)
-         {
-            x[i]->SetFromTrueVector();
-            latent[i]->SetFromTrueVector();
-         }
-         out << "    lambda and C = ";
-         for (int i=0; i<numVars; i++)
-         {
-            AL_functional.EqConstraintMode(i);
-            real_t cval = bnlf.GetEnergy(x_and_psi);
-            lambda[i] += mu*cval;
-            out << "(" << lambda[i] << ", " << cval << "), ";
-         }
-         out << std::endl;
+         out << "Newton Failed to converge in " << solver.GetNumIterations() <<
+             std::endl;
+         break;
       }
+
+      u.SetFromTrueDofs(x_and_latent.GetBlock(0));
+      latent.SetFromTrueDofs(x_and_latent.GetBlock(1));
+
       glvis.Update();
+
+      subtract(latent, latent_k, lambda);
+      lambda *= 1.0 / alpha;
+      if (i > 0) { lambda_diff = lambda.ComputeL1Error(lambda_prev_cf); }
+      if (lambda_diff < 1e-8)
+      {
+         out << "  The dual variable, (psi - psi_k)/alpha, converged" << std::endl;
+         out << "PG Converged in " << i + 1
+             << " with final Lambda difference: " << lambda_diff << std::endl;
+         break;
+      }
+      else
+      {
+         out << "  Newton converged in " << solver.GetNumIterations()
+             << " with residual " << solver.GetFinalNorm() << std::endl;
+         out << "  Lambda difference: " << lambda_diff << std::endl;
+      }
+      lambda_prev = lambda;
    }
    return 0;
 }
