@@ -1,0 +1,14 @@
+# Use the Newton method with a line search for the nonlinear problem F(u)=0.
+-snes_type newtonls
+-ksp_type gmres
+-ksp_gmres_restart 100
+
+# PCFIELDSPLIT
+-pc_type fieldsplit
+-pc_fieldsplit_type schur
+-pc_fieldsplit_schur_fact_type full
+-pc_fieldsplit_schur_precondition selfp
+-fieldsplit_0_ksp_type preonly
+-fieldsplit_0_pc_type hypre
+-fieldsplit_1_ksp_type preonly
+-fieldsplit_1_pc_type hypre

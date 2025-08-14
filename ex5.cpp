@@ -65,6 +65,7 @@ int main(int argc, char *argv[])
                   "Enable Paraview Export. Default is false");
    args.ParseCheck();
    if (myid != 0) { out.Disable(); }
+   MFEMInitializePetsc(NULL,NULL,"./src/pgpetsc",NULL);
 
    PGStepSizeRule alpha_rule(rule_type, alpha0, max_alpha, ratio, ratio2);
 
@@ -150,23 +151,28 @@ int main(int argc, char *argv[])
       Array<Vector*> rhs_list{&rhs.GetBlock(0), &rhs.GetBlock(1)};
       bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
    }
+   PetscOperatorWrapper petsc_bnlf(comm, bnlf, Operator::Type::PETSC_MATAIJ);
 
    real_t alpha;
    // PGPreconditioner prec(latent_k, latent, entropy, alpha);
-   MUMPSMonoSolver lin_solver(comm);
+   PetscLinearSolver lin_solver(comm);
+   lin_solver.SetPrintLevel(0);
    NewtonSolver solver(comm);
    IterativeSolver::PrintLevel print_level;
-   solver.SetPrintLevel(print_level);
+   solver.SetPrintLevel(2);
    solver.SetAbsTol(1e-09);
    solver.SetRelTol(0.0);
    solver.SetMaxIter(20);
    solver.iterative_mode = true;
+   solver.SetSolver(lin_solver);
+   solver.SetOperator(petsc_bnlf);
 
    GLVis glvis("localhost", 19916, 400, 350, 4);
    glvis.Append(u, "x", "Rjclmm");
    glvis.Append(x_mapped_cf, visspace, "|U(psi)|", "RjclQmm");
    glvis.Append(gradu_norm_cf, visspace, "|gradu|", "RjclQmm");
-   glvis.Append(active_set, visspace, "active set", "Rjclmm autoscale off valuerange 0 1");
+   glvis.Append(active_set, visspace, "active set",
+                "Rjclmm autoscale off valuerange 0 1");
 
    real_t lambda_diff = infinity();
    for (int i=0; i<100; i++)
@@ -177,8 +183,7 @@ int main(int argc, char *argv[])
       latent_k = latent;
       latent_k.SetTrueVector();
 
-      solver.SetSolver(lin_solver);
-      solver.SetOperator(bnlf);
+      latent.Add(alpha, lambda);
       solver.Mult(rhs, x_and_latent);
       if (!solver.GetConverged())
       {

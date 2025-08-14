@@ -375,131 +375,31 @@ public:
    });
 };
 
-class PGPreconditioner : public Solver
+class PetscOperatorWrapper : public Operator
 {
-private:
-   ParFiniteElementSpace *fes;
-   ParGridFunction &psi;
-   real_t &alpha;
-   DifferentiableCoefficient entropy_cf;
-   MatrixCoefficient &entropy_hessian_cf;
-   IdentityMatrixCoefficient identity_cf;
-   MatrixSumCoefficient entropy_prec_cf;
-   std::unique_ptr<HypreBoomerAMG> stiffness_prec;
-   std::unique_ptr<CGSolver> stiffness_solver;
-   const Array<int> *offsets;
-   Vector diag;
-   Vector mass_diag;
-   mutable Vector z;
-   const HypreParMatrix *B;
-   bool is_dg = true;
-   std::unique_ptr<BilinearForm> inv_mass_form;
-   std::unique_ptr<HypreParMatrix> inv_mass;
-   std::unique_ptr<BilinearForm> mass_form;
-   std::unique_ptr<HypreParMatrix> mass;
-   std::unique_ptr<CGSolver> mass_solver;
-   std::unique_ptr<HypreBoomerAMG> mass_prec;
+protected:
+   MPI_Comm comm;
+   Operator &op;
+   Operator::Type mtype;
+   mutable std::unique_ptr<PetscParMatrix> petsc_matrix;
 public:
-   PGPreconditioner(ParGridFunction &psik,
-                    ParGridFunction &psi,
-                    ADEntropy &entropy,
-                    real_t &alpha)
-      : fes(psik.ParFESpace())
-      , psi(psi)
-      , alpha(alpha)
-      , entropy_cf(entropy)
-      , entropy_hessian_cf(entropy_cf.Hessian())
-      , identity_cf(entropy.n_input)
-      , entropy_prec_cf(entropy_hessian_cf, identity_cf, -1.0, -1.0)
+   PetscOperatorWrapper(MPI_Comm comm, Operator &op, Operator::Type mtype = Operator::Type::PETSC_MATAIJ)
+      : Operator(op.Height(), op.Width()), comm(comm), op(op), mtype(mtype)
    {
-      entropy_cf.AddInput(&psi);
-      if ((is_dg = fes->IsDGSpace()))
-      {
-         inv_mass_form = NewBilinearForm(*fes);
-         inv_mass_form->AddDomainIntegrator(
-            new InverseIntegrator(
-               new VectorMassIntegrator(entropy_prec_cf)));
-      }
-      else
-      {
-         mass_form = NewBilinearForm(*fes);
-         mass_form->AddDomainIntegrator(
-            new VectorMassIntegrator(entropy_prec_cf));
-      }
+      MFEM_VERIFY(mtype == Operator::Type::PETSC_MATAIJ ||
+                  mtype == Operator::Type::PETSC_MATIS,
+                  "PetscOperatorWrapper: mtype must be PETSC_MATAIJ or PETSC_MATIS");
+   };
+   void Mult(const Vector &x, Vector &y) const override
+   {
+      op.Mult(x, y);
    }
 
-   void SetOperator(const Operator &op) override
+   Operator &GetGradient(const Vector &x) const override
    {
-      // out << "PGPreconditioner: Setting operator" << std::endl;
-      if (is_dg)
-      {
-         entropy_prec_cf.SetAlpha(-1.0 / alpha);
-         entropy_prec_cf.SetBeta(-1.0 / alpha/alpha);
-         inv_mass_form->Update();
-         inv_mass_form->Assemble();
-         inv_mass_form->Finalize();
-         inv_mass.reset(static_cast<ParBilinearForm&>
-                        (*inv_mass_form).ParallelAssemble());
-      }
-      else
-      {
-         entropy_prec_cf.SetAlpha(1.0 / alpha);
-         entropy_prec_cf.SetBeta(1.0 / alpha/alpha);
-         // out << "Assembling mass form" << std::endl;
-         mass_form->Update();
-         auto * mat = mass_form->LoseMat();
-         if (mat) { delete mat; }
-         mass_form->Assemble();
-         mass_form->Finalize();
-         // out << "Serial Assembly Done" << std::endl;
-         mass.reset(static_cast<ParBilinearForm&>
-                    (*mass_form).ParallelAssemble());
-         // out << "Parallel Assembly Done" << std::endl;
-         mass_prec = std::make_unique<HypreBoomerAMG>(*mass);
-         mass_prec->SetPrintLevel(0);
-      }
-      auto * blocks = dynamic_cast<const BlockOperator*>(&op);
-      MFEM_VERIFY(blocks != nullptr, "Not a BlockOperator");
-
-      offsets = &blocks->RowOffsets();
-      MFEM_VERIFY(offsets->Size() == 3, "Only two blocks supported");
-
-      const HypreParMatrix * A = dynamic_cast<const HypreParMatrix*>(&blocks->GetBlock(0,0));
-      MFEM_VERIFY(A != nullptr, "Not a HypreParMatrix");
-      stiffness_prec = std::make_unique<HypreBoomerAMG>(*A);
-      stiffness_prec->SetPrintLevel(0);
-      // out << "PGPreconditioner: Operator setting Done" << std::endl;
-   }
-
-   void Mult(const Vector &b, Vector &x) const override
-   {
-      // out << "PGPreconditioner: Mult" << std::endl;
-      MFEM_VERIFY(b.Size() == x.Size(),
-                  "PGPreconditioner: b and x must have the same size");
-      MFEM_VERIFY(offsets->Last() == b.Size(),
-                  "PGPreconditioner: offsets size does not match b size");
-
-      const BlockVector bblock(b.GetData(), *offsets);
-      const Vector &b_primal = bblock.GetBlock(0);
-      const Vector &b_dual = bblock.GetBlock(1);
-
-      BlockVector xblock(x.GetData(), *offsets);
-      Vector &x_primal = xblock.GetBlock(0);
-      Vector &x_dual = xblock.GetBlock(1);
-
-      // out << "PGPreconditioner: Primal" << std::endl;
-      stiffness_prec->Mult(b_primal, x_primal);
-      // out << "PGPreconditioner: Dual" << std::endl;
-      if (is_dg)
-      {
-         inv_mass->Mult(b_dual, x_dual);
-      }
-      else
-      {
-         mass_prec->Mult(b_dual, x_dual);
-         x_dual.Neg();
-      }
-      // out << "PGPreconditioner: Mult Done" << std::endl;
+      auto &grad = op.GetGradient(x);
+      petsc_matrix = std::make_unique<PetscParMatrix>(comm, &grad, mtype);
+      return *petsc_matrix;
    }
 };
 
