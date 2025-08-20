@@ -132,6 +132,85 @@ public:
                   "Evaluator::GetSize: index out of range");
       return offsets[i+1] - offsets[i];
    }
+   void Project(QuadratureFunction &qf)
+   {
+      const int vdim = offsets.Last();
+      qf.SetVDim(vdim);
+
+      QuadratureSpaceBase &qspace = *qf.GetSpace();
+      Vector qf_view(qf.GetData(), vdim);
+      for (int i=0; i<qspace.GetNE(); i++)
+      {
+         ElementTransformation &Tr = *qspace.GetTransformation(i);
+         const IntegrationRule &ir = qspace.GetIntRule(i);
+         for (int j=0; j<ir.GetNPoints(); j++)
+         {
+            const IntegrationPoint &ip = ir.IntPoint(j);
+            qf_view = Eval(Tr, ip);
+            qf_view.SetData(qf.GetData() + vdim);
+         }
+      }
+      return;
+   }
+   int GetVDim() const { return offsets.Last(); }
+};
+
+class EvaluatorCF : public Coefficient
+{
+   Evaluator &evaluator;
+   int idx;
+   const real_t &val;
+public:
+   EvaluatorCF(Evaluator &evaluator_, int outer_idx=0, int inner_idx=0)
+      : evaluator(evaluator_)
+      , idx(outer_idx)
+      , val(evaluator.val.GetBlock(outer_idx)(inner_idx)) {}
+   real_t Eval(ElementTransformation &Tr, const IntegrationPoint &ip) override
+   {
+      evaluator.Eval(idx, Tr, ip);
+      return val;
+   }
+};
+class EvaluatorVCF : public VectorCoefficient
+{
+   Evaluator &evaluator;
+   int idx;
+public:
+   EvaluatorVCF(Evaluator &evaluator, int idx=-1)
+      : VectorCoefficient(idx == -1 ? evaluator.GetVDim() :
+                          evaluator.val.GetBlock(idx).Size())
+      , evaluator(evaluator)
+      , idx(idx)
+   { }
+
+   void Eval(Vector &V, ElementTransformation &Tr,
+             const IntegrationPoint &ip) override
+   {
+      if (idx == -1) { V = evaluator.Eval(Tr, ip); }
+      else { V = evaluator.Eval(idx, Tr, ip); }
+   }
+};
+class EvaluatorMCF : public MatrixCoefficient
+{
+   Evaluator &evaluator;
+   int idx;
+   const DenseMatrix val;
+public:
+   EvaluatorMCF(Evaluator &evaluator, int h, int w, int idx=0)
+      : MatrixCoefficient(h, w)
+      , evaluator(evaluator)
+      , idx(idx)
+      , val(evaluator.val.GetBlock(idx).GetData(), h, w)
+   {
+      MFEM_VERIFY(evaluator.val.GetBlock(idx).Size() == h*w,
+                  "EvaluatorMCF: size mismatch");
+   }
+   void Eval(DenseMatrix &M, ElementTransformation &Tr,
+             const IntegrationPoint &ip) override
+   {
+      evaluator.Eval(idx, Tr, ip);
+      M = val;
+   }
 };
 
 class ADFunction
