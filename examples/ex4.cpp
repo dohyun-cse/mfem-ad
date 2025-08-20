@@ -1,9 +1,9 @@
 /// Example 4: AD Obstacle Problem with PG
 #include "mfem.hpp"
-#include "src/logger.hpp"
-#include "src/ad_intg.hpp"
-#include "src/tools.hpp"
-#include "src/pg.hpp"
+#include "logger.hpp"
+#include "ad_intg.hpp"
+#include "tools.hpp"
+#include "pg.hpp"
 
 using namespace std;
 using namespace mfem;

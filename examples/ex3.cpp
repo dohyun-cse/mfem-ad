@@ -1,7 +1,7 @@
 /// Example 3: AD Linear Elasticity with Vector FE
 #include "mfem.hpp"
-#include "src/logger.hpp"
-#include "src/ad_intg.hpp"
+#include "logger.hpp"
+#include "ad_intg.hpp"
 
 using namespace std;
 using namespace mfem;

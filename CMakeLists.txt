@@ -9,11 +9,14 @@ find_package(MPI REQUIRED)
 
 # This will be the core library for this project
 add_library(core INTERFACE)
+target_include_directories(core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_subdirectory(examples)
 
 ##---------------------------------------------------------------
 # Modify below block with your custom libraries and executables
 ##---------------------------------------------------------------
-# put your non-executable libraries (relative to ./src/) here.
+# put your non-executable libraries (relative to ./include/) here.
 set(LIB
   logger
   ad_native
@@ -26,13 +29,6 @@ set(LIB_DEP_pg ad_native)
 
 # put your executables (relative to ./) here.
 set(EXECUTABLES
-  examples/ex0
-  examples/ex1
-  examples/ex2
-  examples/ex3
-  examples/ex4
-  examples/ex5
-  ex0
 )
 # Again, if an executable depends on a specific library, put them like this:
 # set(EXE_DEP_myexe dependent_lib1 dependent_lib2)
@@ -84,6 +80,7 @@ include("${MFEM_DIR}/MFEMConfig.cmake")
 foreach(lib ${LIB})
   add_library(${lib} STATIC src/${lib}.cpp)
   target_link_libraries(${lib} PRIVATE mfem)
+  target_include_directories(${lib} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
   set(dep_var "LIB_DEP_${lib}")
   if(DEFINED ${dep_var})
     foreach(dep ${${dep_var}})

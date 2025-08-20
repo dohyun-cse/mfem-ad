@@ -1,6 +1,6 @@
 /// Example 0: AD Function Example
 #include "mfem.hpp"
-#include "src/ad_native.hpp"
+#include "ad_native.hpp"
 
 using namespace std;
 using namespace mfem;
