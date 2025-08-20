@@ -26,12 +26,13 @@ set(LIB_DEP_pg ad_native)
 
 # put your executables (relative to ./) here.
 set(EXECUTABLES
+  examples/ex0
+  examples/ex1
+  examples/ex2
+  examples/ex3
+  examples/ex4
+  examples/ex5
   ex0
-  ex1
-  ex2
-  ex3
-  ex4
-  ex5
 )
 # Again, if an executable depends on a specific library, put them like this:
 # set(EXE_DEP_myexe dependent_lib1 dependent_lib2)
