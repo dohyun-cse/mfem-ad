@@ -1,9 +1,5 @@
 /// Example 0: AD Function Example
 #include "mfem.hpp"
-#include <fstream>
-#include <iostream>
-
-#include "src/logger.hpp"
 #include "src/ad_native.hpp"
 
 using namespace std;

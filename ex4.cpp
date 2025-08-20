@@ -1,8 +1,5 @@
 /// Example 4: AD Obstacle Problem with PG
 #include "mfem.hpp"
-#include <fstream>
-#include <iostream>
-
 #include "src/logger.hpp"
 #include "src/ad_intg.hpp"
 #include "src/tools.hpp"
@@ -154,15 +151,6 @@ int main(int argc, char *argv[])
 
 
    real_t alpha;
-   // PGPreconditioner prec(psik, psi, entropy, alpha);
-   // GMRESSolver lin_solver(comm);
-   // lin_solver.SetPreconditioner(prec);
-   // lin_solver.SetKDim(100);
-   // lin_solver.SetRelTol(1e-8);
-   // lin_solver.SetAbsTol(1e-8);
-   // lin_solver.SetMaxIter(1e05);
-   // lin_solver.SetPrintLevel(2);
-   // lin_solver.iterative_mode = true;
    MUMPSMonoSolver lin_solver(comm);
    NewtonSolver solver(comm);
    solver.SetSolver(lin_solver);

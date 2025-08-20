@@ -1,8 +1,5 @@
 /// Example 2: AD Minimal Surface
 #include "mfem.hpp"
-#include <fstream>
-#include <iostream>
-
 #include "src/logger.hpp"
 #include "src/ad_intg.hpp"
 
