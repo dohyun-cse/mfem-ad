@@ -430,7 +430,6 @@ public:
 
    void SetOperator(const Operator &op) override
    {
-      // out << "PGPreconditioner: Setting operator" << std::endl;
       if (is_dg)
       {
          entropy_prec_cf.SetAlpha(-1.0 / alpha);
@@ -445,16 +444,13 @@ public:
       {
          entropy_prec_cf.SetAlpha(1.0 / alpha);
          entropy_prec_cf.SetBeta(1.0 / alpha/alpha);
-         // out << "Assembling mass form" << std::endl;
          mass_form->Update();
          auto * mat = mass_form->LoseMat();
          if (mat) { delete mat; }
          mass_form->Assemble();
          mass_form->Finalize();
-         // out << "Serial Assembly Done" << std::endl;
          mass.reset(static_cast<ParBilinearForm&>
                     (*mass_form).ParallelAssemble());
-         // out << "Parallel Assembly Done" << std::endl;
          mass_prec = std::make_unique<HypreBoomerAMG>(*mass);
          mass_prec->SetPrintLevel(0);
       }
@@ -468,12 +464,10 @@ public:
       MFEM_VERIFY(A != nullptr, "Not a HypreParMatrix");
       stiffness_prec = std::make_unique<HypreBoomerAMG>(*A);
       stiffness_prec->SetPrintLevel(0);
-      // out << "PGPreconditioner: Operator setting Done" << std::endl;
    }
 
    void Mult(const Vector &b, Vector &x) const override
    {
-      // out << "PGPreconditioner: Mult" << std::endl;
       MFEM_VERIFY(b.Size() == x.Size(),
                   "PGPreconditioner: b and x must have the same size");
       MFEM_VERIFY(offsets->Last() == b.Size(),
@@ -487,9 +481,7 @@ public:
       Vector &x_primal = xblock.GetBlock(0);
       Vector &x_dual = xblock.GetBlock(1);
 
-      // out << "PGPreconditioner: Primal" << std::endl;
       stiffness_prec->Mult(b_primal, x_primal);
-      // out << "PGPreconditioner: Dual" << std::endl;
       if (is_dg)
       {
          inv_mass->Mult(b_dual, x_dual);
@@ -499,7 +491,6 @@ public:
          mass_prec->Mult(b_dual, x_dual);
          x_dual.Neg();
       }
-      // out << "PGPreconditioner: Mult Done" << std::endl;
    }
 };
 
