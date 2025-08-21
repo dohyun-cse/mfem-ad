@@ -75,7 +75,7 @@ protected:
    mutable const BlockVector *latent_k;
    mutable Vector jac;
    mutable DenseMatrix hess;
-   real_t alpha = 1.0;
+   mutable real_t alpha;
    std::unique_ptr<VectorCoefficient> owned_cf;
    static int GetEntropySize(const std::vector<ADEntropy*> &dual_entropy)
    {
@@ -88,13 +88,14 @@ protected:
    }
 
 public:
-   ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy, int idx=0)
-      : ADFunction(f.n_input + dual_entropy.n_input)
+   ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy, Evaluator::param_t alpha, int idx=0)
+      : ADFunction(f.n_input + dual_entropy.n_input, 1)
       , f(f), dual_entropy{&dual_entropy}
       , primal_idx(1)
       , dual_idx(1)
       , entropy_size(1)
    {
+      evaluator.Add(alpha);
       this->primal_idx[0] = idx;
       entropy_size[0] = dual_entropy.n_input;
       MFEM_VERIFY(f.n_input >= this->primal_idx[0] + entropy_size[0],
@@ -104,20 +105,23 @@ public:
       dual_idx[0] = f.n_input;
    }
    ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy,
+                  Evaluator::param_t alpha,
                   GridFunction &latent_k, int idx=0)
-      : ADPGFunctional(f, dual_entropy, idx)
+      : ADPGFunctional(f, dual_entropy, alpha, idx)
    {
       evaluator.Add(&latent_k);
    }
    // Multiple entropies
    ADPGFunctional(ADFunction &f, std::vector<ADEntropy*> dual_entropy_,
-                  std::vector<int> &primal_begin)
-      : ADFunction(f.n_input + GetEntropySize(dual_entropy_))
+                  std::vector<int> &primal_begin, Evaluator::param_t alpha)
+      : ADFunction(f.n_input + GetEntropySize(dual_entropy_), 1)
       , f(f), dual_entropy(std::move(dual_entropy_))
       , primal_idx(primal_begin)
       , dual_idx(dual_entropy.size())
       , entropy_size(dual_entropy.size())
+      , alpha(*evaluator.val.GetBlock(0).GetData())
    {
+      evaluator.Add(alpha);
       int dual_entropy_size = 0;
       int max_primal_index = 0;
       for (int i=0; i<dual_entropy.size(); i++)
@@ -132,8 +136,8 @@ public:
    }
 
    ADPGFunctional(ADFunction &f, std::vector<ADEntropy*> dual_entropy,
-                  std::vector<GridFunction*> latent_k_gf, std::vector<int> &primal_begin)
-      : ADPGFunctional(f, std::move(dual_entropy), primal_begin)
+                  std::vector<GridFunction*> latent_k_gf, std::vector<int> &primal_begin, Evaluator::param_t alpha)
+      : ADPGFunctional(f, std::move(dual_entropy), primal_begin, alpha)
    {
       MFEM_VERIFY(latent_k_gf.size() == this->dual_entropy.size(),
                   "ADPGFunctional: latent_k must have the same size as dual_entropy: "
@@ -150,13 +154,13 @@ public:
    }
    // Multiple entropies
    ADPGFunctional(ADFunction &f, std::vector<std::unique_ptr<ADEntropy>> &dual_entropy,
-                  std::vector<int> &primal_begin)
-      : ADPGFunctional(f, uniquevec2ptrvec(dual_entropy), primal_begin)
+                  std::vector<int> &primal_begin, Evaluator::param_t alpha)
+      : ADPGFunctional(f, uniquevec2ptrvec(dual_entropy), primal_begin, alpha)
    {}
    ADPGFunctional(ADFunction &f, std::vector<std::unique_ptr<ADEntropy>> &dual_entropy,
-                  std::vector<std::unique_ptr<GridFunction>> &latent_k_gf, std::vector<int> primal_begin)
+                  std::vector<std::unique_ptr<GridFunction>> &latent_k_gf, std::vector<int> primal_begin, Evaluator::param_t alpha)
       : ADPGFunctional(f, uniquevec2ptrvec(dual_entropy),
-                       uniquevec2ptrvec(latent_k_gf), primal_begin)
+                       uniquevec2ptrvec(latent_k_gf), primal_begin, alpha)
    {}
 
    const GridFunction& GetPrevLatent(int i) const;
@@ -173,10 +177,6 @@ public:
    const std::vector<ADEntropy*> &GetEntropies() const
    { return dual_entropy; }
 
-   // Set the penalty parameter alpha
-   void SetAlpha(real_t alpha)
-   { this->alpha = alpha; }
-
    real_t GetAlpha() const { return alpha; }
 
    void ProcessParameters(ElementTransformation &Tr,
@@ -188,6 +188,7 @@ public:
       }
       f.ProcessParameters(Tr, ip);
       latent_k = &evaluator.Eval(Tr, ip);
+      alpha = evaluator.val[0];
    }
 
    AD_IMPL(T, V, M, x_psi,
@@ -202,7 +203,7 @@ public:
       for (int i=0; i<entropy_size.size(); i++)
       {
          psi.SetDataAndSize(x_psi.GetData() + dual_idx[i], entropy_size[i]);
-         const Vector &psi_k = latent_k->GetBlock(i);
+         const Vector &psi_k = latent_k->GetBlock(i+1);
          for (int j=0; j<entropy_size[i]; j++)
          {
             cross_entropy += x[primal_idx[i] + j]*(psi[j] - psi_k[j]);
@@ -221,22 +222,22 @@ class ADLambdaPGFunctional : public ADPGFunctional
    {
       // variables
       const V x(x_lambda.GetData(), f.n_input);
-      V x_i;
       V lambda;
-      V psi;
+      V latent;
 
       // evaluate mixed value
       T cross_entropy = T();
       T dual_entropy_sum = T();
       for (int i=0; i<entropy_size.size(); i++)
       {
-         x_i.SetDataAndSize(x_lambda.GetData() + primal_idx[i], entropy_size[i]);
          lambda.SetDataAndSize(x_lambda.GetData() + dual_idx[i], entropy_size[i]);
-         const Vector &psi_k = latent_k->GetBlock(i);
-         psi = psi_k;
-         psi.Add(alpha, lambda);
-         cross_entropy += x_i * lambda;
-         dual_entropy_sum += (*dual_entropy[i])(psi);
+         for (int j=0; j<entropy_size[i]; j++)
+         {
+            cross_entropy += x[primal_idx[i] + j]*lambda[j];
+         }
+         latent = latent_k->GetBlock(i+1);
+         latent.Add(alpha, lambda);
+         dual_entropy_sum += (*dual_entropy[i])(latent);
       }
       return f(x) + cross_entropy - dual_entropy_sum/alpha;
    });
@@ -491,6 +492,90 @@ public:
          mass_prec->Mult(b_dual, x_dual);
          x_dual.Neg();
       }
+   }
+};
+
+class PetscOperatorWrapper : public Operator
+{
+protected:
+   MPI_Comm comm;
+   Operator &op;
+   Operator::Type mtype;
+   mutable std::unique_ptr<PetscParMatrix> petsc_matrix;
+public:
+   PetscOperatorWrapper(MPI_Comm comm, Operator &op,
+                        Operator::Type mtype = Operator::Type::PETSC_MATAIJ)
+      : Operator(op.Height(), op.Width()), comm(comm), op(op), mtype(mtype)
+   { }
+
+   void Mult(const Vector &x, Vector &y) const override
+   {
+      op.Mult(x, y);
+   }
+
+   Operator &GetGradient(const Vector &x) const override
+   {
+      auto &grad = op.GetGradient(x);
+      petsc_matrix = std::make_unique<PetscParMatrix>(comm, &grad, mtype);
+      return *petsc_matrix;
+   }
+};
+
+class NewtonLinearSolverMonitor : public IterativeSolverController
+{
+protected:
+   /// The last IterativeSolver to which this controller was attached.
+   const class IterativeSolver *iter_solver;
+#ifdef MFEM_USE_PETSC
+   PetscLinearSolver *petsc_solver;
+#endif
+   IterativeSolver *mfem_solver;
+
+   int numIterations=0;
+   int prefix=0;
+   bool is_root = true;
+   bool converged = false;
+
+public:
+#ifdef MFEM_USE_PETSC
+   NewtonLinearSolverMonitor(PetscLinearSolver &linear_solver)
+      : petsc_solver(&linear_solver)
+   {
+      is_root = Mpi::Root();
+   }
+#endif
+   NewtonLinearSolverMonitor(IterativeSolver &linear_solver)
+      : mfem_solver(&linear_solver)
+   {
+#ifdef MFEM_USE_MPI
+      is_root = Mpi::Root();
+#endif
+   }
+
+   void SetPrefix(size_t i) { prefix = i; }
+
+   virtual void Reset()
+   {
+      converged = false;
+      numIterations = 0;
+   }
+
+   /// Monitor the solution vector r
+   virtual void MonitorResidual(int it, real_t norm, const Vector &r,
+                                bool final)
+   {
+      if (final && is_root)
+      {
+         for (int i=0; i<prefix; i++) { out << " "; }
+         out << "Average Linear Solver Iterations: " << (numIterations /
+               (it + 1.)) << std::endl;
+         numIterations = 0;
+         return;
+      }
+#ifdef MFEM_USE_PETSC
+      if (petsc_solver) { numIterations += petsc_solver->GetNumIterations(); }
+#endif
+      if (mfem_solver) { numIterations += mfem_solver->GetNumIterations(); }
    }
 };
 

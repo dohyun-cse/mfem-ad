@@ -25,6 +25,39 @@ struct ObstacleEnergy : public ADFunction
 };
 
 
+class KKTCoefficient : public Coefficient
+{
+private:
+   Evaluator evaluator;
+   GridFunction &u;
+   GridFunction &lambda;
+   Vector J;
+   Vector gradu;
+public:
+   KKTCoefficient(Evaluator::param_t lower_bound,
+                  Evaluator::param_t upper_bound,
+                  GridFunction &u,
+                  GridFunction &lambda)
+      : evaluator(2), u(u), lambda(lambda)
+   {
+      evaluator.Add(lower_bound);
+      evaluator.Add(upper_bound);
+   }
+   real_t Eval(ElementTransformation &Tr, const IntegrationPoint &ip) override
+   {
+      evaluator.Eval(Tr, ip);
+      const real_t lower_bound = evaluator.val(0);
+      const real_t upper_bound = evaluator.val(1);
+      const real_t mid = 0.5 * (lower_bound + upper_bound);
+      const real_t u_val = u.GetValue(Tr, ip);
+      // u.GetGradient(Tr, gradu);
+      const real_t lambda_val = lambda.GetValue(Tr, ip);
+      return lambda_val*(u_val-lower_bound)*(u_val-upper_bound);
+   }
+
+
+};
+
 int main(int argc, char *argv[])
 {
    Mpi::Init();
@@ -68,6 +101,7 @@ int main(int argc, char *argv[])
                   "Enable Paraview Export. Default is false");
    args.ParseCheck();
    if (myid != 0) { out.Disable(); }
+   MFEMInitializePetsc(NULL,NULL,"../src/pgpetsc",NULL);
 
    PGStepSizeRule alpha_rule(rule_type, alpha0, max_alpha, ratio, ratio2);
 
@@ -114,20 +148,22 @@ int main(int argc, char *argv[])
    ParGridFunction psik(psi);
 
    u = 0.0; u.ParallelAssemble(x_and_psi.GetBlock(0));
-   psi = 0.0; u.ParallelAssemble(x_and_psi.GetBlock(1));
+   psi = 0.0; psi.ParallelAssemble(x_and_psi.GetBlock(1));
+   psik = 0.0; psik.SetTrueVector();
 
    FermiDiracEntropy entropy(0.0, 0.5);
-   ADPGFunctional pg_functional(obj_energy, entropy, psik);
+
    DifferentiableCoefficient entropy_cf(entropy);
    entropy_cf.AddInput(&psi);
-   VectorCoefficient &x_mapped_cf = entropy_cf.Gradient();
-   QuadratureFunction x_mapped(&visspace);
-   x_mapped = 0.0;
+   VectorCoefficient &u_cf = entropy_cf.Gradient();
 
-   ConstantCoefficient zero_cf(0.0);
+   real_t alpha;
+   ADPGFunctional pg_functional(obj_energy, entropy, &alpha, psik);
+
    ParGridFunction lambda(psi), lambda_prev(psi);
    lambda = 0.0;
    GridFunctionCoefficient lambda_prev_cf(&lambda_prev);
+   KKTCoefficient kkt_cf(0.0, 0.5, u, lambda);
 
    Array<ParFiniteElementSpace*> fespaces{&h1_fes, &l2_fes};
    ParBlockNonlinearForm bnlf(fespaces);
@@ -149,12 +185,17 @@ int main(int argc, char *argv[])
    Array<Vector*> rhs_list{&rhs.GetBlock(0), &rhs.GetBlock(1)};
    bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
 
+   PetscOperatorWrapper petsc_bnlf(comm, bnlf);
 
-   real_t alpha;
-   MUMPSMonoSolver lin_solver(comm);
+   // MUMPSMonoSolver lin_solver(comm);
+   PetscLinearSolver lin_solver(comm);
+   lin_solver.SetMaxIter(1e04);
+   NewtonLinearSolverMonitor lin_monitor(lin_solver);
+   lin_monitor.SetPrefix(2);
    NewtonSolver solver(comm);
+   solver.SetMonitor(lin_monitor);
    solver.SetSolver(lin_solver);
-   solver.SetOperator(bnlf);
+   solver.SetOperator(petsc_bnlf);
    IterativeSolver::PrintLevel print_level;
    solver.SetPrintLevel(print_level);
    solver.SetAbsTol(1e-09);
@@ -162,9 +203,10 @@ int main(int argc, char *argv[])
    solver.SetMaxIter(20);
    solver.iterative_mode = true;
 
-   GLVis glvis("localhost", 19916, 400, 350, 2);
+   GLVis glvis("localhost", 19916, 400, 350, 3);
    glvis.Append(u, "x", "Rjclmm");
-   glvis.Append(x_mapped, "U(psi)", "RjclQmm");
+   glvis.Append(u_cf, visspace, "U(psi)", "RjclQmm");
+   glvis.Append(lambda, "lambda", "Rjclmm");
    glvis.Update();
 
    real_t lambda_diff = infinity();
@@ -172,7 +214,6 @@ int main(int argc, char *argv[])
    {
       alpha = alpha_rule.Get(i);
       out << "PG iteration " << i + 1 << " with alpha=" << alpha << std::endl;
-      pg_functional.SetAlpha(alpha);
       psik = psi;
       psik.SetTrueVector();
       solver.Mult(rhs, x_and_psi);
@@ -185,7 +226,6 @@ int main(int argc, char *argv[])
       u.SetFromTrueDofs(x_and_psi.GetBlock(0));
       psi.SetFromTrueDofs(x_and_psi.GetBlock(1));
 
-      x_mapped_cf.Project(x_mapped);
       glvis.Update();
 
       subtract(psi, psik, lambda);

@@ -28,7 +28,7 @@ int main(int argc, char *argv[])
    MPI_Comm comm = MPI_COMM_WORLD;
    // file name to be saved
    std::stringstream filename;
-   filename << "ad-obstacle-";
+   filename << "ad-grad-obstacle-";
    int rule_type = PGStepSizeRule::RuleType::CONSTANT;
    real_t max_alpha = 1e06;
    real_t alpha0 = 1.0;
@@ -73,7 +73,7 @@ int main(int argc, char *argv[])
    {
       ser_mesh.UniformRefinement();
    }
-   ParMesh mesh(MPI_COMM_WORLD, ser_mesh);
+   ParMesh mesh(comm, ser_mesh);
 
    const int numBdrAttr = mesh.bdr_attributes.Max();
    Array<int> is_bdr_ess1(numBdrAttr);
