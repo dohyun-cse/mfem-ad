@@ -24,40 +24,6 @@ struct ObstacleEnergy : public ADFunction
    });
 };
 
-
-class KKTCoefficient : public Coefficient
-{
-private:
-   Evaluator evaluator;
-   GridFunction &u;
-   GridFunction &lambda;
-   Vector J;
-   Vector gradu;
-public:
-   KKTCoefficient(Evaluator::param_t lower_bound,
-                  Evaluator::param_t upper_bound,
-                  GridFunction &u,
-                  GridFunction &lambda)
-      : evaluator(2), u(u), lambda(lambda)
-   {
-      evaluator.Add(lower_bound);
-      evaluator.Add(upper_bound);
-   }
-   real_t Eval(ElementTransformation &Tr, const IntegrationPoint &ip) override
-   {
-      evaluator.Eval(Tr, ip);
-      const real_t lower_bound = evaluator.val(0);
-      const real_t upper_bound = evaluator.val(1);
-      const real_t mid = 0.5 * (lower_bound + upper_bound);
-      const real_t u_val = u.GetValue(Tr, ip);
-      // u.GetGradient(Tr, gradu);
-      const real_t lambda_val = lambda.GetValue(Tr, ip);
-      return lambda_val*(u_val-lower_bound)*(u_val-upper_bound);
-   }
-
-
-};
-
 int main(int argc, char *argv[])
 {
    Mpi::Init();
@@ -73,6 +39,7 @@ int main(int argc, char *argv[])
    real_t alpha0 = 1.0;
    real_t ratio = 1.0;
    real_t ratio2 = 1.0;
+   bool use_iterative = false;
 
    int order = 2;
    int ref_levels = 3;
@@ -99,6 +66,9 @@ int main(int argc, char *argv[])
    args.AddOption(&paraview, "-pv", "--paraview",
                   "-no-pv", "--no-paraview",
                   "Enable Paraview Export. Default is false");
+   args.AddOption(&use_iterative, "-gmres", "--preconditioned-gmres",
+                  "-mumps", "--MUMPS",
+                  "Use preconditioned GMRES or MUMPS as linear solver. Default is MUMPS");
    args.ParseCheck();
    if (myid != 0) { out.Disable(); }
    MFEMInitializePetsc(NULL,NULL,"../src/pgpetsc",NULL);
@@ -106,7 +76,7 @@ int main(int argc, char *argv[])
    PGStepSizeRule alpha_rule(rule_type, alpha0, max_alpha, ratio, ratio2);
 
    // Mesh mesh = rhs_fun_circle
-   Mesh ser_mesh = Mesh::MakeCartesian2D(10, 10,
+   Mesh ser_mesh = Mesh::MakeCartesian2D(2, 2,
                                          Element::QUADRILATERAL);
    const int dim = ser_mesh.Dimension();
    for (int i = 0; i < ref_levels; i++)
@@ -163,7 +133,6 @@ int main(int argc, char *argv[])
    ParGridFunction lambda(psi), lambda_prev(psi);
    lambda = 0.0;
    GridFunctionCoefficient lambda_prev_cf(&lambda_prev);
-   KKTCoefficient kkt_cf(0.0, 0.5, u, lambda);
 
    Array<ParFiniteElementSpace*> fespaces{&h1_fes, &l2_fes};
    ParBlockNonlinearForm bnlf(fespaces);
@@ -185,17 +154,28 @@ int main(int argc, char *argv[])
    Array<Vector*> rhs_list{&rhs.GetBlock(0), &rhs.GetBlock(1)};
    bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
 
-   PetscOperatorWrapper petsc_bnlf(comm, bnlf);
 
    // MUMPSMonoSolver lin_solver(comm);
-   PetscLinearSolver lin_solver(comm);
-   lin_solver.SetMaxIter(1e04);
-   NewtonLinearSolverMonitor lin_monitor(lin_solver);
-   lin_monitor.SetPrefix(2);
+   std::unique_ptr<Solver> lin_solver;
+   std::unique_ptr<NewtonLinearSolverMonitor> lin_monitor;
+   std::unique_ptr<Operator> petsc_bnlf;
+   if (use_iterative)
+   {
+      auto petsc_solver = std::make_unique<PetscLinearSolver>(comm);
+      petsc_solver->SetMaxIter(1e04);
+      lin_monitor = std::make_unique<NewtonLinearSolverMonitor>(*petsc_solver);
+      lin_monitor->SetPrefix(2);
+      lin_solver = std::move(petsc_solver);
+      petsc_bnlf = std::make_unique<PetscOperatorWrapper>(comm, bnlf);
+   }
+   else
+   {
+      lin_solver = std::make_unique<MUMPSMonoSolver>(comm);
+   }
    NewtonSolver solver(comm);
-   solver.SetMonitor(lin_monitor);
-   solver.SetSolver(lin_solver);
-   solver.SetOperator(petsc_bnlf);
+   if (lin_monitor) { solver.SetMonitor(*lin_monitor); }
+   solver.SetSolver(*lin_solver);
+   solver.SetOperator(petsc_bnlf ? *petsc_bnlf : bnlf);
    IterativeSolver::PrintLevel print_level;
    solver.SetPrintLevel(print_level);
    solver.SetAbsTol(1e-09);
@@ -216,12 +196,13 @@ int main(int argc, char *argv[])
       out << "PG iteration " << i + 1 << " with alpha=" << alpha << std::endl;
       psik = psi;
       psik.SetTrueVector();
+
       solver.Mult(rhs, x_and_psi);
+
       if (!solver.GetConverged())
       {
          out << "Newton Failed to converge in " << solver.GetNumIterations() <<
              std::endl;
-         break;
       }
       u.SetFromTrueDofs(x_and_psi.GetBlock(0));
       psi.SetFromTrueDofs(x_and_psi.GetBlock(1));
@@ -230,7 +211,8 @@ int main(int argc, char *argv[])
 
       subtract(psi, psik, lambda);
       lambda *= 1.0 / pg_functional.GetAlpha();
-      if ((lambda_diff = lambda.ComputeL1Error(lambda_prev_cf)) < 1e-10)
+
+      if ((lambda_diff = lambda.ComputeL1Error(lambda_prev_cf)) < 1e-8)
       {
          out << "  The dual variable, (psi - psi_k)/alpha, converged" << std::endl;
          out << "PG Converged in " << i + 1
@@ -243,6 +225,7 @@ int main(int argc, char *argv[])
              << " with residual " << solver.GetFinalNorm() << std::endl;
          out << "  Lambda difference: " << lambda_diff << std::endl;
       }
+
       lambda_prev = lambda;
    }
    return 0;
