@@ -1,15 +1,8 @@
 /*
 This code is a template for serial implementation
 */
-
 #include "mfem.hpp"
-#include <fstream>
-#include <iostream>
-
-/*
-include file goes here
-*/
-#include "src/logger.hpp"
+#include "logger.hpp"
 
 using namespace std;
 using namespace mfem;
