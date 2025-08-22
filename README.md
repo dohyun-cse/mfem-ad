@@ -1,6 +1,6 @@
-# AD LVPP Test
+# MFEM AD
 
-LVPP Test is a test project for the LVPP method using AD.
+This repository provides a general AD interface for the MFEM library
 
     
 ## MFEM binding
@@ -16,3 +16,5 @@ set(MFEM_DEBUG_DIR "/path/to/mfem/debug/build")
 ```bash
 cmake -DCMAKE_BUILD_TYPE=<Release or Debug> -S . -B <PATH_TO_BUILD>
 ```
+
+To run examples with parallel support, `MFEM` must be built with `PETSc` support.

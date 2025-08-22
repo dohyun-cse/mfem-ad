@@ -62,6 +62,11 @@ constexpr bool isValidADEval()
       // QVALUE cannot be combined with other modes except VECTOR
       return static_cast<int>(mode & (~(ADEval::QVALUE | ADEval::VECTOR))) == 0;
    }
+   if constexpr (hasFlag(mode, ADEval::VECFE))
+   {
+      return !hasFlag(mode,
+                      ADEval::VECTOR); // VECTOR is only for vector-valued scalar FE
+   }
    return true;
 }
 

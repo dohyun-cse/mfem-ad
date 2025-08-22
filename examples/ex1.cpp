@@ -63,7 +63,7 @@ int main(int argc, char *argv[])
    lin_solver.Mult(load, x);
    GLVis glvis("localhost", 19916);
    glvis.Append(x, "x", "Rjc");
-   glvis.Update();
+
    FunctionCoefficient exact_sol([](const Vector &x)
    {
       return std::sin(M_PI * x(0)) * std::sin(M_PI * x(1));
