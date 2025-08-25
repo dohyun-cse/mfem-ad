@@ -3,25 +3,33 @@
 #include "logger.hpp"
 #include "ad_intg.hpp"
 #include "tools.hpp"
-#include "pg.hpp"
 
 using namespace std;
 using namespace mfem;
 
 
-struct DarcyFunctional : public ADFunction
+struct DarcyFunctional : public ADVectorFunction
 {
    int dim;
    // input: q (vector), divq (scalar), u (scalar) -> dim + 1 + 1
-   DarcyFunctional(int dim) : ADFunction(dim + 1 + 1), dim(dim) {}
-   AD_IMPL(T, V, M, q_divq_u,
+   // output: coefficient for w, divw, v -> dim + 1 + 1 (w, v are test functions)
+   DarcyFunctional(int dim) : ADVectorFunction(dim + 1 + 1, dim + 1 + 1),
+      dim(dim) {}
+   // (q, w) - (div w, u) -> res[w] = q, res[divw] = -u
+   // (div q, v) -> res[v] = div q
+   AD_VEC_IMPL(T, V, M, q_divq_u, res,
    {
-      V q(q_divq_u.GetData(), dim);
-      T divq = q_divq_u[dim];
-      T u = q_divq_u[dim+1];
-      return (q*q)*0.5 + (divq*u);
-      // dF/dq = (q, w) + (div w, u) -> (q, w) - (w, grad u) -> q = grad u
-      // dF/du = (div q, v)  -> div grad u -> RHS should be negated.
+      res.SetSize(dim + 1 + 1);
+      const V q(q_divq_u.GetData(), dim);
+      const T divq = q_divq_u[dim];
+      const T u = q_divq_u[dim+1];
+
+      V w_cf(res.GetData(), dim);
+      T &divw_cf = res[dim];
+      T &v_cf = res[dim+1];
+      w_cf = q;
+      divw_cf = -u;
+      v_cf = divq;
    });
 };
 
@@ -35,7 +43,6 @@ int main(int argc, char *argv[])
    // file name to be saved
    std::stringstream filename;
    filename << "ad-darcy-";
-   bool use_iterative = false;
 
    int order = 2;
    int ref_levels = 3;
@@ -52,12 +59,8 @@ int main(int argc, char *argv[])
    args.AddOption(&paraview, "-pv", "--paraview",
                   "-no-pv", "--no-paraview",
                   "Enable Paraview Export. Default is false");
-   args.AddOption(&use_iterative, "-gmres", "--preconditioned-gmres",
-                  "-mumps", "--MUMPS",
-                  "Use preconditioned GMRES or MUMPS as linear solver. Default is MUMPS");
    args.ParseCheck();
    if (myid != 0) { out.Disable(); }
-   MFEMInitializePetsc(NULL,NULL,"../src/darcypetsc",NULL);
 
    // Mesh mesh = rhs_fun_circle
    Mesh ser_mesh = Mesh::MakeCartesian2D(2, 2,
@@ -108,26 +111,36 @@ int main(int argc, char *argv[])
    b.AddDomainIntegrator(new DomainLFIntegrator(load_cf));
    b.Assemble();
    b.ParallelAssemble(rhs.GetBlock(1));
-   rhs.GetBlock(1).Neg();
    rhs.GetBlock(0) = 0.0;
 
-   // MUMPSMonoSolver lin_solver(comm);
-   std::unique_ptr<Solver> lin_solver;
-   std::unique_ptr<Operator> petsc_bnlf;
-   if (use_iterative)
-   {
-      auto petsc_solver = std::make_unique<PetscLinearSolver>(comm);
-      petsc_solver->SetMaxIter(1e04);
-      lin_solver = std::move(petsc_solver);
-      petsc_bnlf = std::make_unique<PetscOperatorWrapper>(comm, bnlf);
-      lin_solver->SetOperator(petsc_bnlf->GetGradient(flux_and_potential));
-   }
-   else
-   {
-      lin_solver = std::make_unique<MUMPSMonoSolver>(comm);
-      lin_solver->SetOperator(bnlf.GetGradient(flux_and_potential));
-   }
-   lin_solver->Mult(rhs, flux_and_potential);
+   GMRESSolver lin_solver(comm);
+   lin_solver.SetRelTol(1e-08);
+   lin_solver.SetAbsTol(0.0);
+   lin_solver.SetMaxIter(1e04);
+   lin_solver.SetKDim(100);
+
+   BlockOperator &darcy_op = bnlf.GetGradient(flux_and_potential);
+   Vector Md(flux_fes.GetTrueVSize());
+   HypreParMatrix &M = static_cast<HypreParMatrix&>(darcy_op.GetBlock(0,0));
+   HypreParMatrix &B = static_cast<HypreParMatrix&>(darcy_op.GetBlock(1,0));
+   M.GetDiag(Md);
+   HypreParMatrix invMBt(static_cast<HypreParMatrix&>(darcy_op.GetBlock(0,1)));
+   invMBt.InvScaleRows(Md);
+   std::unique_ptr<HypreParMatrix> S(ParMult(&B, &invMBt));
+   BlockDiagonalPreconditioner prec(offsets);
+   HypreDiagScale invM(M);
+   HypreBoomerAMG invS(*S);
+   invS.SetPrintLevel(0);
+   invM.iterative_mode = false;
+   invS.iterative_mode = false;
+   invS.SetMaxIter(1);
+   prec.SetDiagonalBlock(0, &invM);
+   prec.SetDiagonalBlock(1, &invS);
+   prec.owns_blocks = false;
+
+   lin_solver.SetPreconditioner(prec);
+   lin_solver.SetOperator(darcy_op);
+   lin_solver.Mult(rhs, flux_and_potential);
    flux.SetFromTrueDofs(flux_and_potential.GetBlock(0));
    potential.SetFromTrueDofs(flux_and_potential.GetBlock(1));
 
@@ -141,9 +154,10 @@ int main(int argc, char *argv[])
    });
    VectorFunctionCoefficient exact_flux(dim, [](const Vector &x, Vector &q)
    {
+      // flux = - grad u
       q.SetSize(x.Size());
-      q[0] = M_PI*std::cos(M_PI*x[0])*std::sin(M_PI*x[1]);
-      q[1] = M_PI*std::sin(M_PI*x[0])*std::cos(M_PI*x[1]);
+      q[0] = -M_PI*std::cos(M_PI*x[0])*std::sin(M_PI*x[1]);
+      q[1] = -M_PI*std::sin(M_PI*x[0])*std::cos(M_PI*x[1]);
    });
    out << "L2 Error in Potential: "
        << potential.ComputeL2Error(exact_potential) << std::endl;

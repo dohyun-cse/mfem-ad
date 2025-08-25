@@ -39,7 +39,6 @@ int main(int argc, char *argv[])
    real_t alpha0 = 1.0;
    real_t ratio = 1.0;
    real_t ratio2 = 1.0;
-   bool use_iterative = false;
 
    int order = 2;
    int ref_levels = 3;
@@ -66,12 +65,8 @@ int main(int argc, char *argv[])
    args.AddOption(&paraview, "-pv", "--paraview",
                   "-no-pv", "--no-paraview",
                   "Enable Paraview Export. Default is false");
-   args.AddOption(&use_iterative, "-gmres", "--preconditioned-gmres",
-                  "-mumps", "--MUMPS",
-                  "Use preconditioned GMRES or MUMPS as linear solver. Default is MUMPS");
    args.ParseCheck();
    if (myid != 0) { out.Disable(); }
-   MFEMInitializePetsc(NULL,NULL,"../src/pgpetsc",NULL);
 
    PGStepSizeRule alpha_rule(rule_type, alpha0, max_alpha, ratio, ratio2);
 
@@ -154,28 +149,13 @@ int main(int argc, char *argv[])
    Array<Vector*> rhs_list{&rhs.GetBlock(0), &rhs.GetBlock(1)};
    bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
 
-
-   // MUMPSMonoSolver lin_solver(comm);
-   std::unique_ptr<Solver> lin_solver;
-   std::unique_ptr<NewtonLinearSolverMonitor> lin_monitor;
-   std::unique_ptr<Operator> petsc_bnlf;
-   if (use_iterative)
-   {
-      auto petsc_solver = std::make_unique<PetscLinearSolver>(comm);
-      petsc_solver->SetMaxIter(1e04);
-      lin_monitor = std::make_unique<NewtonLinearSolverMonitor>(*petsc_solver);
-      lin_monitor->SetPrefix(2);
-      lin_solver = std::move(petsc_solver);
-      petsc_bnlf = std::make_unique<PetscOperatorWrapper>(comm, bnlf);
-   }
-   else
-   {
-      lin_solver = std::make_unique<MUMPSMonoSolver>(comm);
-   }
+#ifndef MFEM_USE_MUMPS
+#error "MUMPS is required to run this example."
+#endif
+   MUMPSMonoSolver lin_solver(comm);
    NewtonSolver solver(comm);
-   if (lin_monitor) { solver.SetMonitor(*lin_monitor); }
-   solver.SetSolver(*lin_solver);
-   solver.SetOperator(petsc_bnlf ? *petsc_bnlf : bnlf);
+   solver.SetSolver(lin_solver);
+   solver.SetOperator(bnlf);
    IterativeSolver::PrintLevel print_level;
    solver.SetPrintLevel(print_level);
    solver.SetAbsTol(1e-09);
