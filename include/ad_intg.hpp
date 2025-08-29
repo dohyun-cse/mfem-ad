@@ -26,12 +26,12 @@ enum class ADEval
    QVALUE  = 1 << 0, // u(T, ip) (quadrature value)
    VALUE   = 1 << 1, // u(T, ip)
    GRAD    = 1 << 2, // grad u(T, ip)
-   DIV     = 1 << 3, // div u(T, ip) (not yet implemented)
-   CURL    = 1 << 4, // curl u(T, ip) (not yet implemented)
+   DIV     = 1 << 3, // div u(T, ip)
+   CURL    = 1 << 4, // curl u(T, ip)
    Hessian = 1 << 5, // D^2 u(T, ip) (not yet implemented)
 
    VECTOR  = 1 << 6, // vector-valued scalar FE
-   VECFE   = 1 << 7, // vector-valued vector FE (not yet implemented)
+   VECFE   = 1 << 7, // vector-valued vector FE
    NUMOPT  = 1 << 8, // number of options. If change options, change this value to last
 };
 
