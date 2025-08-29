@@ -180,18 +180,21 @@ const Vector& Evaluator::Eval(int i, ElementTransformation &Tr,
 
 void ADFunction::Gradient(const Vector &x, ElementTransformation &Tr,
                           const IntegrationPoint &ip,
-                          Vector &J) const
+                          Vector &J,
+                          int start,
+                          int end) const
 {
    ProcessParameters(Tr, ip);
-   Gradient(x, J);
+   Gradient(x, J, start, end);
 }
-void ADFunction::Gradient(const Vector &x, Vector &J) const
+void ADFunction::Gradient(const Vector &x, Vector &J, int start, int end) const
 {
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::Gradient: x.Size() must match n_input");
-   J.SetSize(x.Size());
+   if (end == -1) { end = n_input; }
+   J.SetSize(end - start);
    ADVector x_ad(x);
-   for (int i=0; i < n_input; i++)
+   for (int i=start; i < end; i++)
    {
       x_ad[i].gradient = 1.0;
       ADReal_t result = (*this)(x_ad);
@@ -202,26 +205,31 @@ void ADFunction::Gradient(const Vector &x, Vector &J) const
 
 void ADFunction::Hessian(const Vector &x, ElementTransformation &Tr,
                          const IntegrationPoint &ip,
-                         DenseMatrix &H) const
+                         DenseMatrix &H,
+                         int istart, int iend,
+                         int jstart, int jend) const
 {
    ProcessParameters(Tr, ip);
-   Hessian(x, H);
+   Hessian(x, H, istart, iend, jstart, jend);
 }
 
-void ADFunction::Hessian(const Vector &x, DenseMatrix &H) const
+void ADFunction::Hessian(const Vector &x, DenseMatrix &H,
+                         int istart, int iend,
+                         int jstart, int jend) const
 {
    MFEM_ASSERT(x.Size() == n_input,
                "ADFunction::Hessian: x.Size() must match n_input");
-   H.SetSize(x.Size(), x.Size());
+   if (iend == -1) { iend = n_input; }
+   if (jend == -1) { jend = n_input; }
+   H.SetSize(iend - istart, jend - jstart);
    AD2Vector x_ad(x);
-   for (int i=0; i<n_input; i++) // Loop for the first derivative
+   for (int i=istart; i<iend; i++) // Loop for the first derivative
    {
       x_ad[i].value.gradient = 1.0;
-      for (int j=0; j<=i; j++)
+      for (int j=jstart; j<=jend; j++)
       {
          x_ad[j].gradient.value = 1.0;
          AD2Real_t result = (*this)(x_ad);
-         H(j, i) = result.gradient.gradient;
          H(i, j) = result.gradient.gradient;
          x_ad[j].gradient.value = 0.0; // Reset gradient for next iteration
       }
@@ -294,7 +302,7 @@ void Lagrangian::ProcessParameters(ElementTransformation &Tr,
 }
 
 ALFunctional ALFunctional::AddEqConstraint(ADFunction &constraint,
-      real_t target)
+                                           real_t target)
 {
    eq_con.push_back(&constraint);
    int numCon = eq_con.size();
