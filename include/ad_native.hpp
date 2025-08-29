@@ -81,9 +81,9 @@ public:
    int Add(param_t param, bool eval_owns = false);
    int Add(Vector &v)
    {
-      if (dynamic_cast<GridFunction*>(&v))
+      if (dynamic_cast<GridFunction*>(&v) || dynamic_cast<QuadratureFunction*>(&v))
       {
-         MFEM_WARNING("Adding GridFunction by value, instead of its pointer. "
+         MFEM_WARNING("Adding GridFunction or QuadratureFunction by value, instead of its pointer. "
                       "This result in the whole GridFunction value will be used at each quadrature point, "
                       "which is likely not what you want. "
                       "Use Add(const GridFunction*) instead.");
@@ -92,9 +92,10 @@ public:
    }
    int Add(const Vector &v)
    {
-      if (dynamic_cast<const GridFunction*>(&v))
+      if (dynamic_cast<const GridFunction*>(&v) ||
+          dynamic_cast<const QuadratureFunction*>(&v))
       {
-         MFEM_WARNING("Adding GridFunction by value, instead of its pointer. "
+         MFEM_WARNING("Adding GridFunction or QuadratureFunction by value, instead of its pointer. "
                       "This result in the whole GridFunction value will be used at each quadrature point, "
                       "which is likely not what you want. "
                       "Use Add(const GridFunction*) instead.");
