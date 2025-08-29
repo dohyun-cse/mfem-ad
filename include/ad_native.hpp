@@ -214,6 +214,7 @@ public:
    }
 };
 
+class ADVectorFunction;
 class ADFunction
 {
 protected:
@@ -259,14 +260,20 @@ public:
 
    // Evaluate the gradient, using forward mode autodiff
    virtual void Gradient(const Vector &x, ElementTransformation &Tr,
-                         const IntegrationPoint &ip, Vector &J) const;
-   virtual void Gradient(const Vector &x, Vector &J) const;
+                         const IntegrationPoint &ip, Vector &J,
+                         int start=0, int end=-1) const;
+   virtual void Gradient(const Vector &x, Vector &J,
+                         int start=0, int end=-1) const;
    // Evaluate the Hessian, using forward over forward autodiff
    // The Hessian assumed to be symmetric.
    virtual void Hessian(const Vector &x, ElementTransformation &Tr,
                         const IntegrationPoint &ip,
-                        DenseMatrix &H) const;
-   virtual void Hessian(const Vector &x, DenseMatrix &H) const;
+                        DenseMatrix &H,
+                        int istart=0, int iend=-1,
+                        int jstart=0, int jend=-1) const;
+   virtual void Hessian(const Vector &x, DenseMatrix &H,
+                        int istart=0, int iend=-1,
+                        int jstart=0, int jend=-1) const;
 };
 
 // We currently only support Jacobian.
@@ -275,9 +282,9 @@ public:
 // we overrode the Gradient for evaulation, and Hessian for Jacobian
 // To be used with ADNonlinearFormIntegrator or ADBlockNonlinearFormIntegrator,
 // n_input and n_output must be the same.
-struct ADVectorFunction : public ADFunction
+class ADVectorFunction : public ADFunction
 {
-
+public:
    int n_output;
    ADVectorFunction(int n_input, int n_output)
       : ADFunction(n_input), n_output(n_output)
@@ -312,20 +319,42 @@ struct ADVectorFunction : public ADFunction
 
    // To support ADNonlinearFormIntegrator and ADVectorNonlinearFormIntegrator
    void Gradient(const Vector &x, ElementTransformation &Tr,
-                 const IntegrationPoint &ip, Vector &F) const override final
-   { (*this)(x, Tr, ip, F); }
+                 const IntegrationPoint &ip, Vector &F, int start=0,
+                 int end=-1) const override final
+   {
+      MFEM_VERIFY(start == 0 && end == -1,
+                  "ADVectorFunction::Gradient: start and end must be 0 and -1");
+      (*this)(x, Tr, ip, F);
+   }
 
-   void Gradient(const Vector &x, Vector &F) const override final
-   { (*this)(x, F); }
+   void Gradient(const Vector &x, Vector &F,
+                 int start = 0, int end = -1) const override final
+   {
+      MFEM_VERIFY(start == 0 && end == -1,
+                  "ADVectorFunction::Gradient: start and end must be 0 and -1");
+      (*this)(x, F);
+   }
 
    // To support ADNonlinearFormIntegrator and ADVectorNonlinearFormIntegrator
    void Hessian(const Vector &x, ElementTransformation &Tr,
                 const IntegrationPoint &ip,
-                DenseMatrix &J) const override final
-   { this->Gradient(x, Tr, ip, J); }
+                DenseMatrix &J,
+                int istart=0, int iend=-1,
+                int jstart=0, int jend=-1) const override final
+   {
+      MFEM_VERIFY(istart == 0 && iend == -1 && jstart == 0 && jend == -1,
+                  "ADVectorFunction::Hessian: istart, iend, jstart, jend must be 0, -1, 0, -1");
+      this->Gradient(x, Tr, ip, J);
+   }
 
-   void Hessian(const Vector &x, DenseMatrix &J) const override final
-   { this->Gradient(x, J); }
+   void Hessian(const Vector &x, DenseMatrix &J,
+                int istart=0, int iend=-1,
+                int jstart=0, int jend=-1) const override final
+   {
+      MFEM_VERIFY(istart == 0 && iend == -1 && jstart == 0 && jend == -1,
+                  "ADVectorFunction::Hessian: istart, iend, jstart, jend must be 0, -1, 0, -1");
+      this->Gradient(x, J);
+   }
 
    real_t operator()(const Vector &x) const override final
    {
@@ -344,6 +373,28 @@ struct ADVectorFunction : public ADFunction
    }
 };
 
+class ADGradientFunction : public ADVectorFunction
+{
+protected:
+public:
+   ADFunction &f;
+   ADGradientFunction(ADFunction& f):
+      ADVectorFunction(f.n_input, f.n_input), f(f)
+   {}
+   void operator()(const Vector &x, Vector &F) const override
+   {
+      f.Gradient(x, F);
+   }
+   void Gradient(const Vector &x, DenseMatrix &J) const
+   {
+      f.Hessian(x, J);
+   }
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+   }
+};
+
 class DifferentiableCoefficient : public Coefficient
 {
 private:
@@ -352,13 +403,15 @@ private:
    class GradientCoefficient : public VectorCoefficient
    {
       DifferentiableCoefficient &c;
+      int start, end;
    public:
       GradientCoefficient(int dim, DifferentiableCoefficient &c)
-         : VectorCoefficient(dim), c(c) { }
+         : VectorCoefficient(dim), c(c), start(0), end(dim) { }
+      void SetRange(int s, int e) { start = s; end = e; vdim = e - s; }
       void Eval(Vector &J, ElementTransformation &T,
                 const IntegrationPoint &ip) override
       {
-         return c.f.Gradient(c.evaluator.Eval(T, ip), T, ip, J);
+         return c.f.Gradient(c.evaluator.Eval(T, ip), T, ip, J, start, end);
       }
    };
 
@@ -368,12 +421,18 @@ private:
    class HessianCoefficient : public MatrixCoefficient
    {
       DifferentiableCoefficient &c;
+      int istart, iend, jstart, jend;
    public:
       HessianCoefficient(int dim, DifferentiableCoefficient &c)
-         : MatrixCoefficient(dim), c(c) { }
+         : MatrixCoefficient(dim), c(c), istart(0), iend(dim), jstart(0), jend(dim) { }
+      void SetRange(int is, int ie, int js, int je)
+      {
+         istart = is; iend = ie; height = ie - is;
+         jstart = js; jend = je; width = je - js;
+      }
       void Eval(DenseMatrix &H, ElementTransformation &T,
                 const IntegrationPoint &ip) override
-      { return c.f.Hessian(c.evaluator.Eval(T, ip), T, ip, H); }
+      { return c.f.Hessian(c.evaluator.Eval(T, ip), T, ip, H, istart, iend, jstart, jend); }
    };
 
    friend class HessianCoefficient;
@@ -389,15 +448,83 @@ public:
       , grad_cf(f.n_input, *this)
       , hess_cf(f.n_input, *this)
    {}
-   DifferentiableCoefficient &AddInput(Evaluator::param_t param)
-   { evaluator.Add(param); return *this; }
+   DifferentiableCoefficient &AddInput(Evaluator::param_t param, bool owns = false)
+   {
+      evaluator.Add(param, owns);
+      return *this;
+   }
+   int GetNumInputs() const { return evaluator.val.NumBlocks(); }
 
    real_t Eval(ElementTransformation &T,
                const IntegrationPoint &ip) override
    { return f(evaluator.Eval(T, ip), T, ip); }
 
-   GradientCoefficient& Gradient() { return grad_cf; }
-   HessianCoefficient& Hessian() { return hess_cf; }
+   GradientCoefficient& Gradient(int start=0, int end=-1)
+   {
+      if (end == -1) { end = f.n_input; }
+      grad_cf.SetRange(start, end);
+      return grad_cf;
+   }
+   HessianCoefficient& Hessian(int istart=0, int iend=-1, int jstart=0,
+                               int jend=-1)
+   {
+      if (iend == -1) { iend = f.n_input; }
+      if (jend == -1) { jend = f.n_input; }
+      hess_cf.SetRange(istart, iend, jstart, jend);
+      return hess_cf;
+   }
+
+protected:
+};
+class DifferentiableVectorCoefficient : public VectorCoefficient
+{
+private:
+   int idx; // index of the next input variable
+
+   class GradientCoefficient : public MatrixCoefficient
+   {
+      DifferentiableVectorCoefficient &c;
+      Vector fval;
+   public:
+      GradientCoefficient(int in_dim, int out_dim, DifferentiableVectorCoefficient &c)
+         : MatrixCoefficient(out_dim, in_dim), c(c), fval(out_dim) { }
+      bool transpose = false;
+      void Eval(DenseMatrix &J, ElementTransformation &T,
+                const IntegrationPoint &ip) override
+      {
+         c.f.Gradient(c.evaluator.Eval(T, ip), T, ip, J);
+         if (transpose) { J.Transpose(); }
+      }
+   };
+
+   friend class GradientCoefficient;
+   GradientCoefficient grad_cf;
+
+protected:
+   Evaluator evaluator;
+
+   ADVectorFunction &f;
+public:
+   DifferentiableVectorCoefficient(ADVectorFunction &f)
+      : VectorCoefficient(f.n_output), f(f), idx(0)
+      , grad_cf(f.n_input, f.n_output, *this)
+   {}
+   DifferentiableVectorCoefficient &AddInput(Evaluator::param_t param,
+                                             bool owns = false)
+   {
+      evaluator.Add(param, owns);
+      return *this;
+   }
+
+   void Eval(Vector &fx, ElementTransformation &T,
+             const IntegrationPoint &ip) override
+   { f(evaluator.Eval(T, ip), T, ip, fx); }
+
+   GradientCoefficient& Gradient(bool transpose=false)
+   {
+      grad_cf.transpose = transpose;
+      return grad_cf;
+   }
 
 protected:
 };
@@ -696,8 +823,6 @@ public:
       for (int i=0; i<eq_con.size(); i++) { result += (*eq_con[i])(x)*lambda[i]; }
       return result;
    });
-
-private:
 };
 
 // Augmented Lagrangian functional
@@ -768,6 +893,198 @@ private:
       if (al_eval_mode >= 0) { return cx; } // if non-negative, only c(x)
       return cx*(lambda[idx] + penalty*0.5*cx);
    }
+};
+
+/// @brief ADFunction with reduced input by fixing a portion of the input
+/// Currently, we only support [0, offset) or [offset, n_input)
+class ReducedADFunction : public ADFunction
+{
+private:
+   ADFunction &f;
+   Evaluator fixed_input;
+   mutable Vector full_J;
+   mutable DenseMatrix full_H;
+   const int offset;
+   bool fix_after;
+public:
+   void ProcessParameters(ElementTransformation &Tr,
+                          const IntegrationPoint &ip) const override
+   {
+      f.ProcessParameters(Tr, ip); // process paraent's parameters
+      fixed_input.Eval(Tr, ip); // process fixed input
+   }
+   void ProcessParameters(const BlockVector &param_val) const override
+   { f.ProcessParameters(param_val); }
+   ReducedADFunction(ADFunction &org_f,
+                     std::initializer_list<Evaluator::param_t> fixed_srcs,
+                     int offset_, bool fix_after_)
+      : ADFunction(fix_after_ ? offset_ : org_f.n_input - offset_)
+      , f(org_f)
+      , offset(offset_)
+      , fix_after(fix_after_)
+   {
+      for (auto &src : fixed_srcs)
+      {
+         fixed_input.Add(src);
+      }
+      MFEM_VERIFY(fixed_input.val.Size() + n_input == f.n_input,
+                  "ReducedADFunction: fixed input size + n_input must equal to original function input size");
+   }
+   AD_IMPL(T, V, M, x,
+   {
+      V full_x(f.n_input);
+      if (fix_after)
+      {
+         for (int i=0; i<n_input; i++)
+         { full_x[i] = x[i]; }
+         for (int i=0; i<fixed_input.val.Size(); i++)
+         { full_x[i+offset] = fixed_input.val[i]; }
+      }
+      else
+      {
+         for (int i=0; i<fixed_input.val.Size(); i++)
+         { full_x[i] = fixed_input.val[i]; }
+         for (int i=0; i<n_input; i++)
+         { full_x[i+offset] = x[i]; }
+      }
+      return f(full_x);
+   });
+   void Gradient(const Vector &x, Vector &J, int start=0,
+                 int end=-1) const override
+   {
+      if (end == -1) { end = n_input; }
+      MFEM_VERIFY(start != 0 && end != n_input,
+                  "ReducedADFunction::Gradient: Partial gradient not implemented yet");
+      Vector full_x(f.n_input);
+      if (fix_after)
+      {
+         for (int i=0; i<n_input; i++)
+         { full_x[i] = x[i]; }
+         for (int i=0; i<fixed_input.val.Size(); i++)
+         { full_x[i+offset] = fixed_input.val[i]; }
+      }
+      else
+      {
+         for (int i=0; i<fixed_input.val.Size(); i++)
+         { full_x[i] = fixed_input.val[i]; }
+         for (int i=0; i<n_input; i++)
+         { full_x[i+offset] = x[i]; }
+      }
+      f.Gradient(full_x, J, fix_after ? 0 : offset, fix_after ? offset : f.n_input);
+   }
+   void Hessian(const Vector &x, DenseMatrix &H,
+                int istart=0, int iend=-1,
+                int jstart=0, int jend=-1) const override
+   {
+      if (iend == -1) { iend = n_input; }
+      if (jend == -1) { jend = n_input; }
+      MFEM_VERIFY(istart != 0 && iend != n_input && jstart != 0 && jend != n_input,
+                  "ReducedADFunction::Hessian: Partial Hessian not implemented yet");
+      Vector full_x(f.n_input);
+      if (fix_after)
+      {
+         for (int i=0; i<n_input; i++)
+         { full_x[i] = x[i]; }
+         for (int i=0; i<fixed_input.val.Size(); i++)
+         { full_x[i+offset] = fixed_input.val[i]; }
+      }
+      else
+      {
+         for (int i=0; i<fixed_input.val.Size(); i++)
+         { full_x[i] = fixed_input.val[i]; }
+         for (int i=0; i<n_input; i++)
+         { full_x[i+offset] = x[i]; }
+      }
+      int start = fix_after ? 0 : offset;
+      int end = fix_after ? offset : f.n_input;
+      f.Hessian(full_x, H, start, end, start, end);
+   }
+};
+
+/// @brief ADFunction with [state, parameters] input, providing methods to
+/// get reduced functions for state or parameters only.
+/// @see, ReducedADFunction, ParametrizedADFunction::GetStateFunction,
+/// ParametrizedADFunction::GetParamFunction
+class ParametrizedADFunction : public ADFunction
+{
+protected:
+   const int parameter_begin;
+public:
+   ParametrizedADFunction(int n_input, int param_begin)
+      : ADFunction(n_input), parameter_begin(param_begin)
+   {
+      MFEM_ASSERT(n_input > 0, "ADFunction: n_input must be positive");
+      MFEM_ASSERT(param_begin >= 0 && param_begin < n_input,
+                  "ADFunction: param_begin must be in [0, n_input)");
+   }
+
+   std::unique_ptr<ReducedADFunction> GetStateFunction(
+      std::initializer_list<Evaluator::param_t> param_srcs)
+   {
+      return std::make_unique<ReducedADFunction>(*this, param_srcs,
+                                                 n_input, parameter_begin);
+   }
+
+   std::unique_ptr<ReducedADFunction> GetParamFunction(
+      std::initializer_list<Evaluator::param_t> state_srcs)
+   {
+      return std::make_unique<ReducedADFunction>(*this, state_srcs,
+                                                 n_input, 0);
+   }
+};
+
+/// Linear elasticity energy with parameterized Young's modulus
+class ParametrizedLinearElasticityEnergy : public ParametrizedADFunction
+{
+   const int dim;
+   const real_t nu; // fixed Poisson's ratio
+public:
+   ParametrizedLinearElasticityEnergy(int dim, const real_t nu)
+      : ParametrizedADFunction(dim*dim + 1, dim*dim)
+      , dim(dim)
+      , nu(nu)
+   {}
+   AD_IMPL(T, V, M, gradu_and_E,
+   {
+      const V gradu(gradu_and_E.GetData(), dim*dim);
+      const T E = gradu_and_E[dim*dim];
+      const T lambda = E*nu / ((1 + nu)*(1 - 2*nu));
+      const T mu = E / (2*(1 + nu));
+      T divnorm = T();
+      for (int i=0; i<dim; i++) { divnorm += gradu[i*dim + i]; }
+      divnorm = divnorm*divnorm;
+      T symm_h1_norm = T();
+      for (int i=0; i<dim; i++)
+      {
+         for (int j=0; j<dim; j++)
+         {
+            T symm = 0.5*(gradu[i*dim + j] + gradu[j*dim + i]);
+            symm_h1_norm += symm*symm;
+         }
+      }
+      return 0.5*lambda*divnorm + mu*symm_h1_norm;
+   })
+};
+
+class ParametrizedIsotropicDiffusionEnergy : public ParametrizedADFunction
+{
+   const int dim;
+public:
+   ParametrizedIsotropicDiffusionEnergy(int dim)
+      : ParametrizedADFunction(dim + 1, dim)
+      , dim(dim)
+   {}
+   AD_IMPL(T, V, M, gradu_and_k,
+   {
+      const V gradu(gradu_and_k.GetData(), dim);
+      const T k = gradu_and_k[dim];
+      T result = T();
+      for (int i=0; i<dim; i++)
+      {
+         result += gradu[i]*gradu[i];
+      }
+      return 0.5*k*result;
+   })
 };
 // ------------------------------------------------------------------------------
 // Implement dual max/min
