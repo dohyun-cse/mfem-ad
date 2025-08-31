@@ -175,6 +175,7 @@ bool GLVis::Append(GridFunction *gf, QuadratureFunction *qf,
       }
       qfkey_has_Q.Append(hasQ);
    }
+   else { qfkey_has_Q.Append(false); }
    if (!window_title.empty())
    {
       socket << "window_title '" << window_title <<"'\n";
