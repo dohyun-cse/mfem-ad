@@ -148,14 +148,15 @@ int main(int argc, char *argv[])
 
    Array<Vector*> rhs_list{&rhs.GetBlock(0), &rhs.GetBlock(1)};
    bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
+   ParMonolithicBlockNonlinearFormWrapper bnlf_wrapper(bnlf);
 
 #ifndef MFEM_USE_MUMPS
 #error "MUMPS is required to run this example."
 #endif
-   MUMPSMonoSolver lin_solver(comm);
+   MUMPSSolver lin_solver(comm);
    NewtonSolver solver(comm);
    solver.SetSolver(lin_solver);
-   solver.SetOperator(bnlf);
+   solver.SetOperator(bnlf_wrapper);
    IterativeSolver::PrintLevel print_level;
    solver.SetPrintLevel(print_level);
    solver.SetAbsTol(1e-09);

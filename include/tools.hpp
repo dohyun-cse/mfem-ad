@@ -56,6 +56,18 @@ NewGridFunction(FiniteElementSpace &fes, real_t *data)
 #endif
    return std::make_unique<GridFunction>(&fes, data);
 }
+inline std::unique_ptr<GridFunction>
+NewGridFunction(FiniteElementSpace &fes, Vector &lvec)
+{
+#ifdef MFEM_USE_MPI
+   if (ParFiniteElementSpace *pfes =
+          dynamic_cast<ParFiniteElementSpace*>(&fes))
+   {
+      return std::make_unique<ParGridFunction>(pfes, lvec);
+   }
+#endif
+   return std::make_unique<GridFunction>(&fes, lvec);
+}
 
 inline std::unique_ptr<LinearForm>
 NewLinearForm(FiniteElementSpace &fes)
@@ -401,31 +413,51 @@ inline real_t Integrate(Coefficient &cf, int order, Mesh &mesh)
 #endif
    return integral;
 }
-inline real_t Integrate(Coefficient &cf, QuadratureSpace &qs)
+inline real_t dot(MPI_Comm comm, QuadratureFunction &a, QuadratureFunction &b)
 {
-   real_t integral = 0.0;
-   const Vector &w = qs.GetWeights();
-   for (int i=0; i<qs.GetNE(); i++)
+   MFEM_VERIFY(a.GetVDim() == b.GetVDim(), "Vector dimension mismatch.");
+   MFEM_VERIFY(a.GetSpace() == b.GetSpace(), "Quadrature space mismatch.");
+   QuadratureSpaceBase *qs = a.GetSpace();
+   Vector a_vals, b_vals;
+   real_t dot = 0.0;
+   const Vector &weights = qs->GetWeights();
+   int ctr=0;
+   for (int i=0; i<qs->GetNE(); i++)
    {
-      ElementTransformation &Tr = *qs.GetTransformation(i);
-      const IntegrationRule &ir = qs.GetIntRule(i);
-      int offset = qs.Offset(i);
+      const IntegrationRule &ir = qs->GetIntRule(i);
       for (int j=0; j<ir.GetNPoints(); j++)
       {
-         const IntegrationPoint &ip = ir.IntPoint(j);
-         Tr.SetIntPoint(&ip);
-         integral += cf.Eval(Tr, ip) * w(offset + j);
+         a.GetValues(i, j, a_vals);
+         b.GetValues(i, j, b_vals);
+         dot += weights[ctr++] * (a_vals * b_vals);
       }
    }
-#ifdef MFEM_USE_MPI
-   // real_t integral = qf.Integrate();
-   ParMesh *pmesh = dynamic_cast<ParMesh*>(qs.GetMesh());
-   if (pmesh)
+   MPI_Allreduce(MPI_IN_PLACE, &dot, 1, MPITypeMap<real_t>::mpi_type, MPI_SUM,
+                 comm);
+   return dot;
+}
+inline real_t dot(const QuadratureFunction &a, VectorCoefficient &b)
+{
+   VectorQuadratureFunctionCoefficient a_cf(a);
+   InnerProductCoefficient sum_cf(a_cf, b);
+   return a.GetSpace()->Integrate(sum_cf);
+}
+
+/// @brief Get the essential true dofs from component-wise boundary conditions
+inline void GetEssentialTrueDofs(FiniteElementSpace &fes,
+                                 const Array2D<int> &ess_bdr,
+                                 Array<int> &ess_tdofs)
+{
+   MFEM_VERIFY(ess_bdr.NumRows() == fes.GetVDim(),
+               "GetEssentialTrueDofs: ess_bdr height must match fes vdim.");
+   Array<int> bdr_marker;
+   Array<int> curr_tdofs;
+   ess_tdofs.SetSize(0);
+   for (int i=0; i<ess_bdr.NumRows(); i++)
    {
-      MPI_Allreduce(MPI_IN_PLACE, &integral, 1, MPI_DOUBLE, MPI_SUM,
-                    pmesh->GetComm());
+      ess_bdr.GetRow(i, bdr_marker);
+      fes.GetEssentialTrueDofs(bdr_marker, curr_tdofs, i);
+      ess_tdofs.Append(curr_tdofs);
    }
-#endif
-   return integral;
 }
 };

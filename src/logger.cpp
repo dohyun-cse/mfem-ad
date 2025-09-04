@@ -122,7 +122,6 @@ bool GLVis::Append(GridFunction *gf, QuadratureFunction *qf,
    socketstream &socket = *sockets.back();
    if (!socket.is_open() || !socket.good())
    {
-      MFEM_WARNING("GLVis: Cannot connect to " << hostname << ":" << port);
       sockets.back().reset();
       sockets.pop_back();
       return false;
@@ -226,8 +225,6 @@ void GLVis::Update()
    {
       if (!sockets[i]->is_open() || !sockets[i]->good())
       {
-         MFEM_WARNING("GLVis: Connection to " << hostname << ":" << port
-                      << " for window " << i+1 << " lost.");
          continue;
       }
 #ifdef MFEM_USE_MPI

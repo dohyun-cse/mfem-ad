@@ -189,17 +189,19 @@ void ADFunction::Gradient(const Vector &x, ElementTransformation &Tr,
 }
 void ADFunction::Gradient(const Vector &x, Vector &J, int start, int end) const
 {
-   MFEM_ASSERT(x.Size() == n_input,
-               "ADFunction::Gradient: x.Size() must match n_input");
-   if (end == -1) { end = n_input; }
+   MFEM_ASSERT(x.Size() == width,
+               "ADFunction::Gradient: x.Size() must match width");
+   if (end == -1) { end = width; }
+   MFEM_VERIFY(start >= 0 && start <= end && end <= width,
+               "ADFunction::Gradient: invalid start/end");
    J.SetSize(end - start);
    ADVector x_ad(x);
-   for (int i=start; i < end; i++)
+   for (int i=0; i < end-start; i++)
    {
-      x_ad[i].gradient = 1.0;
+      x_ad[i+start].gradient = 1.0;
       ADReal_t result = (*this)(x_ad);
       J[i] = result.gradient;
-      x_ad[i].gradient = 0.0;
+      x_ad[i+start].gradient = 0.0;
    }
 }
 
@@ -217,39 +219,47 @@ void ADFunction::Hessian(const Vector &x, DenseMatrix &H,
                          int istart, int iend,
                          int jstart, int jend) const
 {
-   MFEM_ASSERT(x.Size() == n_input,
-               "ADFunction::Hessian: x.Size() must match n_input");
-   if (iend == -1) { iend = n_input; }
-   if (jend == -1) { jend = n_input; }
-   H.SetSize(iend - istart, jend - jstart);
+   MFEM_ASSERT(x.Size() == width,
+               "ADFunction::Hessian: x.Size() must match width");
+   if (iend == -1) { iend = width; }
+   if (jend == -1) { jend = width; }
+   MFEM_VERIFY(istart >= 0 && istart <= iend && iend <= width,
+               "ADFunction::Hessian: invalid row start/end. "
+               "Got [" << istart << ", " << iend << ") for width " << width);
+   MFEM_VERIFY(jstart >= 0 && jstart <= jend && jend <= width,
+               "ADFunction::Hessian: invalid col start/end. "
+               "Got [" << jstart << ", " << jend << ") for width " << width);
+   int h = iend - istart;
+   int w = jend - jstart;
+   H.SetSize(h, w);
    AD2Vector x_ad(x);
-   for (int i=istart; i<iend; i++) // Loop for the first derivative
+   for (int i=0; i<h; i++) // Loop for the first derivative
    {
-      x_ad[i].value.gradient = 1.0;
-      for (int j=jstart; j<=jend; j++)
+      x_ad[i+istart].value.gradient = 1.0;
+      for (int j=0; j<w; j++)
       {
-         x_ad[j].gradient.value = 1.0;
+         x_ad[j+jstart].gradient.value = 1.0;
          AD2Real_t result = (*this)(x_ad);
          H(i, j) = result.gradient.gradient;
-         x_ad[j].gradient.value = 0.0; // Reset gradient for next iteration
+         x_ad[j+jstart].gradient.value = 0.0; // Reset gradient for next iteration
       }
-      x_ad[i].value.gradient = 0.0;
+      x_ad[i+istart].value.gradient = 0.0;
    }
 }
 
 void ADVectorFunction::Gradient(const Vector &x, DenseMatrix &J) const
 {
-   MFEM_ASSERT(x.Size() == n_input,
-               "ADVectorFunction::Gradient: x.Size() must match n_input");
+   MFEM_ASSERT(x.Size() == width,
+               "ADVectorFunction::Gradient: x.Size() must match width");
    ADVector x_ad(x);
-   ADVector Fx(n_output);
-   J.SetSize(n_output, n_input);
-   for (int i=0; i<n_input; i++)
+   ADVector Fx(height);
+   J.SetSize(height, width);
+   for (int i=0; i<width; i++)
    {
       x_ad[i].gradient = 1.0;
       Fx = ADReal_t();
       (*this)(x_ad, Fx);
-      for (int j=0; j<n_output; j++)
+      for (int j=0; j<height; j++)
       {
          J(j,i) = Fx[j].gradient;
       }
@@ -259,12 +269,12 @@ void ADVectorFunction::Gradient(const Vector &x, DenseMatrix &J) const
 
 void ADVectorFunction::Hessian(const Vector &x, DenseTensor &H) const
 {
-   MFEM_ASSERT(x.Size() == n_input,
-               "ADVectorFunction::Gradient: x.Size() must match n_input");
+   MFEM_ASSERT(x.Size() == width,
+               "ADVectorFunction::Gradient: x.Size() must match width");
    AD2Vector x_ad(x);
-   AD2Vector Fx(n_output);
-   H.SetSize(n_input, n_input, n_output);
-   for (int i=0; i<n_input; i++) // Loop for the first derivative
+   AD2Vector Fx(width);
+   H.SetSize(width, width, width);
+   for (int i=0; i<width; i++) // Loop for the first derivative
    {
       x_ad[i].value.gradient = 1.0;
       for (int j=0; j<=i; j++)
@@ -272,7 +282,7 @@ void ADVectorFunction::Hessian(const Vector &x, DenseTensor &H) const
          x_ad[j].gradient.value = 1.0;
          Fx = AD2Real_t();
          (*this)(x_ad, Fx);
-         for (int k=0; k<n_output; k++)
+         for (int k=0; k<width; k++)
          {
             H(j, i, k) = Fx[k].gradient.gradient;
             H(i, j, k) = Fx[k].gradient.gradient;

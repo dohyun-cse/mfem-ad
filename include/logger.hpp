@@ -113,6 +113,15 @@ public:
       MFEM_VERIFY(i < sockets.size(), "Index out of range");
       return *sockets[i];
    }
+   bool Connected()
+   {
+      bool connected = true;
+      for (auto &socket : sockets)
+      {
+         connected = connected && (socket->is_open() && socket->good());
+      }
+      return connected;
+   }
 };
 
 } // namespace mfem

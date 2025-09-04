@@ -11,7 +11,7 @@ void Print(DenseTensor &H);
 struct MyADFunction : public ADFunction
 {
 public:
-   MyADFunction(int n_input): ADFunction(n_input) { }
+   MyADFunction(int n): ADFunction(n) { }
 
    AD_IMPL(T, V, M, x, return sin(x(0))*exp(x(1)) + pow(x(2), 3.0);)
 };
@@ -20,7 +20,7 @@ struct MyADVecFunction : public ADVectorFunction
 {
 public:
    MyADVecFunction()
-      : ADVectorFunction(3, 2) { }
+      : ADVectorFunction(2, 3) { }
 
    AD_VEC_IMPL(T, V, M, x, result,
    {

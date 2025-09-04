@@ -111,7 +111,7 @@ real_t ADNonlinearFormIntegrator<mode>::GetElementEnergy(
    real_t energy = 0.0;
 
    int shapedim = InitInputShapes(el, Tr, allshapes);
-   x.SetSize(f.n_input);
+   x.SetSize(f.width);
    if constexpr (hasFlag(mode, ADEval::VECTOR))
    {
       elfun_matview.UseExternalData(const_cast<real_t*>(elfun.GetData()),
@@ -157,8 +157,8 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementVector(
    elvect.SetSize(dof*vdim);
    elvect = 0.0;
 
-   x.SetSize(f.n_input);
-   jac.SetSize(f.n_input);
+   x.SetSize(f.width);
+   jac.SetSize(f.width);
 
    int shapedim = InitInputShapes(el, Tr, allshapes);
 
@@ -216,12 +216,12 @@ void ADNonlinearFormIntegrator<mode>::AssembleElementGrad(
    elmat = 0.0;
 
    int shapedim = InitInputShapes(el, Tr, allshapes);
-   MFEM_ASSERT(shapedim*vdim == f.n_input,
+   MFEM_ASSERT(shapedim*vdim == f.width,
                "ADNonlinearFormIntegrator: "
-               "shapedim*vdim must match n_input");
+               "shapedim*vdim must match width");
 
-   x.SetSize(f.n_input);
-   H.SetSize(f.n_input);
+   x.SetSize(f.width);
+   H.SetSize(f.width);
    Hx.SetSize(dof, shapedim*vdim*vdim);
 
 
@@ -433,7 +433,7 @@ real_t ADBlockNonlinearFormIntegrator<modes...>::GetElementEnergy(
    real_t energy = 0.0;
 
    std::array<int, numSpaces> shapedim(InitInputShapes(el, Tr, allshapes));
-   x.SetSize(f.n_input);
+   x.SetSize(f.width);
    int x_idx = 0;
    _constexpr_for([&](auto vi)
    {
@@ -506,8 +506,8 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementVector(
       x_idx[i+1] = shapedim[i]*vdim[i];
    }
    x_idx.PartialSum();
-   x.SetSize(f.n_input);
-   jac.SetSize(f.n_input);
+   x.SetSize(f.width);
+   jac.SetSize(f.width);
    _constexpr_for([&](auto vi)
    {
       xvar[vi].MakeRef(x, x_idx[vi], shapedim[vi]*vdim[vi]);
@@ -602,8 +602,8 @@ void ADBlockNonlinearFormIntegrator<modes...>::AssembleElementGrad(
       x_idx[i+1] = shapedim[i]*vdim[i];
    }
    x_idx.PartialSum();
-   x.SetSize(f.n_input);
-   H.SetSize(f.n_input);
+   x.SetSize(f.width);
+   H.SetSize(f.width);
 
    _constexpr_for([&](auto vi)
    {

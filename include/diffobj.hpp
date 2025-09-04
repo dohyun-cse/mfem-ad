@@ -2,9 +2,9 @@
 
 #include "mfem.hpp"
 #include "ad_native.hpp"
-#include "ad_intg.hpp"
-#include "tools.hpp"
-#include "pg.hpp"
+// #include "ad_intg.hpp"
+// #include "tools.hpp"
+// #include "pg.hpp"
 
 namespace mfem
 {
@@ -94,7 +94,7 @@ public:
    ForwardBackwardOperator(int size)
       : Operator(size), grad_op(*this) {}
    ForwardBackwardOperator(int height, int width)
-      : Operator(width, height), grad_op(*this) {}
+      : Operator(height, width), grad_op(*this) {}
 
    /// @brief Forward operation, y = F(x)
    virtual void Mult(const Vector &x, Vector &y) const = 0;
@@ -103,6 +103,7 @@ public:
       x_ptr = &x;
       return grad_op;
    }
+   virtual std::string Name() const { return std::string("ForwardBackwardOperator"); }
 protected:
    /// @brief Adjoint operation, y = (F')^T x
    /// with stored x from the last GetGradient call
@@ -154,7 +155,7 @@ private:
 class CompositeOperator : public ForwardBackwardOperator
 {
    /// The sequence of operators to be composed.
-   std::vector<std::reference_wrapper<ForwardBackwardOperator>> ops;
+   std::vector<ForwardBackwardOperator*> ops;
    /// Stores intermediate vectors from the forward pass (Mult).
    /// Except for the initial input vector x, which will be provided by the user
    /// Mult(x, y) call and GetGradient(x) call (stored in x_ptr).
@@ -187,17 +188,17 @@ public:
     *           CompositeOperator stores a reference, so the lifetime of `op`
     *           must be managed externally.
     */
-   void AddOperator(ForwardBackwardOperator &op)
+   void AddOperation(ForwardBackwardOperator &op)
    {
       MFEM_VERIFY(last_output_size == op.Width(),
                   "CompositeOperator: Operator input size does not match.");
       last_output_size = op.Height();
-      if (ops.empty())
+      if (!ops.empty())
       {
          intermediate_inputs.push_back(std::make_unique<Vector>(op.Width()));
          adjoint_results.push_back(std::make_unique<Vector>(op.Width()));
       }
-      ops.push_back(op);
+      ops.push_back(&op);
    }
    Vector &GetIntermediateOutput(const int idx)
    {
@@ -237,18 +238,19 @@ public:
    void Mult(const Vector &x, Vector &y) const override
    {
       MFEM_VERIFY(x.Size() == Width(),
-                  "CompositeOperator::Mult: x size does not match operator width");
+                  "CompositeOperator::Mult: x size does not match operator width"
+                  " (x.Size() = " << x.Size() << ", width = " << Width());
       MFEM_VERIFY(last_output_size == Height(),
                   "CompositeOperator::Mult: Last operator output size does not match operator height");
       if (ops.empty()) { y = x; return; }
       const Vector *current_input = &x;
-      for (int i=0; i<ops.size()-1; i++)
+      for (int i=0; i<(int)ops.size()-1; i++)
       {
-         ops[i].get().Mult(*current_input, *intermediate_inputs[i]);
+         ops[i]->Mult(*current_input, *intermediate_inputs[i]);
          current_input = intermediate_inputs[i].get();
       }
       y.SetSize(Height());
-      ops.back().get().Mult(*current_input, y);
+      ops.back()->Mult(*current_input, y);
    }
 protected:
    /**
@@ -269,22 +271,24 @@ protected:
    void AdjointMult(const Vector &dJdy, Vector &dJdx) const override
    {
       MFEM_VERIFY(dJdy.Size() == Height(),
-                  "CompositeOperator::AdjointMult: dJdy size does not match operator height");
+                  "CompositeOperator::AdjointMult: dJdy size does not match operator height. "
+                  "(dJdy.Size() = " << dJdy.Size() << ", height = " << Height() << ")");
       MFEM_VERIFY(last_output_size == Height(),
-                  "CompositeOperator::AdjointMult: Last operator output size does not match operator height");
+                  "CompositeOperator::AdjointMult: Last operator output size does not match operator height. "
+                  "(last output size = " << last_output_size << ", height = " << Height() << ")");
       MFEM_VERIFY(x_ptr != nullptr,
                   "CompositeOperator::AdjointMult: Must call GetGradient(x) before AdjointMult.");
       if (ops.empty()) { dJdx = dJdy; return; }
       const Vector *current_adjoint = &dJdy;
-      for (int i=ops.size()-1; i>=1; i--)
+      for (int i=(int)ops.size()-1; i>=1; i--)
       {
-         ops[i].get().GetGradient(*intermediate_inputs[i-1]).MultTranspose(
+         ops[i]->GetGradient(*intermediate_inputs[i-1]).MultTranspose(
             *current_adjoint, *adjoint_results[i-1]);
          current_adjoint = adjoint_results[i-1].get();
       }
 
       dJdx.SetSize(Width());
-      ops[0].get().GetGradient(*x_ptr).MultTranspose(
+      ops[0]->GetGradient(*x_ptr).MultTranspose(
          *current_adjoint, dJdx);
    }
 };
@@ -308,19 +312,19 @@ class ForwardBackwardADOperator : public ForwardBackwardOperator
    int input_vdim;
    std::unique_ptr<ADFunction> owned_F;
    mutable DifferentiableCoefficient F_cf;
-   VectorCoefficient &dF_cf;
+   VectorCoefficient &dydx_cf;
    mutable QuadratureFunction x_qf;
    QuadratureSpace &qspace;
 public:
    /// @brief Create a ForwardBackwardADOperator
    ForwardBackwardADOperator(ADFunction &F, QuadratureSpace &qspace)
       : ForwardBackwardOperator(qspace.GetSize(),
-                                qspace.GetSize()*F.n_input)
-      , input_vdim(F.n_input), F_cf(F), dF_cf(F_cf.Gradient())
-      , qspace(qspace), x_qf(&qspace, F.n_input)
+                                qspace.GetSize()*F.width)
+      , input_vdim(F.width), F_cf(F), dydx_cf(F_cf.Gradient())
+      , qspace(qspace), x_qf(&qspace, F.width)
    {
-      MFEM_VERIFY(F.n_input > 0,
-                  "ForwardBackwardADOperator: n_input and n_output must be positive");
+      MFEM_VERIFY(F.width > 0,
+                  "ForwardBackwardADOperator: width and n_output must be positive");
       F_cf.AddInput(&x_qf);
    }
    /// @brief Create a ForwardBackwardADOperator that takes ownership of the ADFunction pointer.
@@ -338,6 +342,7 @@ public:
       QuadratureFunction y_qf(&qspace, y.GetData(), 1);
       F_cf.Project(y_qf);
    }
+   std::string Name() const override { return std::string("ADOperator"); }
 protected:
    void AdjointMult(const Vector &dJdy, Vector &dJdx) const override
    {
@@ -347,7 +352,7 @@ protected:
       dJdx.SetSize(Height());
       QuadratureFunction dJdy_qf(&qspace, dJdy.GetData());
       QuadratureFunctionCoefficient dJdy_cf(dJdy_qf);
-      ScalarVectorProductCoefficient dJdx_cf(dJdy_cf, dF_cf);
+      ScalarVectorProductCoefficient dJdx_cf(dJdy_cf, dydx_cf);
       QuadratureFunction dJdx_qf(&qspace, dJdx.GetData(), input_vdim);
       dJdx_cf.Project(dJdx_qf);
    }
@@ -367,20 +372,20 @@ class ForwardBackwardADVectorOperator : public ForwardBackwardOperator
    int output_vdim;
    std::unique_ptr<ADVectorFunction> owned_F;
    mutable DifferentiableVectorCoefficient F_cf;
-   MatrixCoefficient &dF_cf;
+   MatrixCoefficient &dydxT_cf;
    mutable QuadratureFunction x_qf;
    QuadratureSpace &qspace;
 public:
    /// @brief Create a ForwardBackwardADVectorOperator
    ForwardBackwardADVectorOperator(ADVectorFunction &F, QuadratureSpace &qspace)
-      : ForwardBackwardOperator(qspace.GetSize()*F.n_output,
-                                qspace.GetSize()*F.n_input)
-      , input_vdim(F.n_input), output_vdim(F.n_output)
-      , F_cf(F), dF_cf(F_cf.Gradient())
-      , qspace(qspace), x_qf(&qspace, F.n_input)
+      : ForwardBackwardOperator(qspace.GetSize()*F.height,
+                                qspace.GetSize()*F.width)
+      , input_vdim(F.width), output_vdim(F.height)
+      , F_cf(F), dydxT_cf(F_cf.Gradient(true))
+      , qspace(qspace), x_qf(&qspace, F.width)
    {
-      MFEM_VERIFY(F.n_input > 0,
-                  "ForwardBackwardADOperator: n_input and n_output must be positive");
+      MFEM_VERIFY(F.width > 0,
+                  "ForwardBackwardADOperator: width and n_output must be positive");
       F_cf.AddInput(&x_qf);
    }
    /// @brief Create a ForwardBackwardADVectorOperator that takes ownership of the ADVectorFunction pointer.
@@ -404,11 +409,10 @@ protected:
       MFEM_VERIFY(dJdy.Size() == Height(),
                   "ForwardBackwardADOperator::AdjointMult: x size does not match operator height");
       x_qf.SetData(x_ptr->GetData()); // x from last GetGradient call
-      dJdx.SetSize(Height());
-      QuadratureFunction dJdy_qf(&qspace, dJdy.GetData());
+      QuadratureFunction dJdy_qf(&qspace, dJdy.GetData(), output_vdim);
       VectorQuadratureFunctionCoefficient dJdy_cf(dJdy_qf);
-      TransposeMatrixCoefficient dF_T(dF_cf);
-      MatrixVectorProductCoefficient dJdx_cf(dF_T, dJdy_cf);
+      MatrixVectorProductCoefficient dJdx_cf(dydxT_cf, dJdy_cf);
+      dJdx.SetSize(Width());
       QuadratureFunction dJdx_qf(&qspace, dJdx.GetData(), input_vdim);
       dJdx_cf.Project(dJdx_qf);
    }

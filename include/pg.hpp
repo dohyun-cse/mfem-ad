@@ -37,10 +37,10 @@ struct PGStepSizeRule
 class ADEntropy : public ADFunction
 {
 public:
-   ADEntropy(int n_input)
-      : ADFunction(n_input) { }
-   ADEntropy(int n_input, int capacity)
-      : ADFunction(n_input, capacity) { }
+   ADEntropy(int n)
+      : ADFunction(n) { }
+   ADEntropy(int n, int eval_capacity)
+      : ADFunction(n, eval_capacity) { }
 };
 
 template <typename T>
@@ -82,14 +82,15 @@ protected:
       int size = 0;
       for (const auto &entropy : dual_entropy)
       {
-         size += entropy->n_input;
+         size += entropy->width;
       }
       return size;
    }
 
 public:
-   ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy, Evaluator::param_t alpha, int idx=0)
-      : ADFunction(f.n_input + dual_entropy.n_input, 1)
+   ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy, Evaluator::param_t alpha,
+                  int idx=0)
+      : ADFunction(f.width + dual_entropy.width, 1)
       , f(f), dual_entropy{&dual_entropy}
       , primal_idx(1)
       , dual_idx(1)
@@ -97,12 +98,12 @@ public:
    {
       evaluator.Add(alpha);
       this->primal_idx[0] = idx;
-      entropy_size[0] = dual_entropy.n_input;
-      MFEM_VERIFY(f.n_input >= this->primal_idx[0] + entropy_size[0],
-                  "ADPGFunctional: f.n_input must not exceed "
-                  "primal_begin + dual_entropy.n_input:"
-                  << f.n_input << " >= " << n_input);
-      dual_idx[0] = f.n_input;
+      entropy_size[0] = dual_entropy.width;
+      MFEM_VERIFY(f.width >= this->primal_idx[0] + entropy_size[0],
+                  "ADPGFunctional: f.width must not exceed "
+                  "primal_begin + dual_entropy.width:"
+                  << f.width << " >= " << width);
+      dual_idx[0] = f.width;
    }
    ADPGFunctional(ADFunction &f, ADEntropy &dual_entropy,
                   Evaluator::param_t alpha,
@@ -114,7 +115,7 @@ public:
    // Multiple entropies
    ADPGFunctional(ADFunction &f, std::vector<ADEntropy*> dual_entropy_,
                   std::vector<int> &primal_begin, Evaluator::param_t alpha)
-      : ADFunction(f.n_input + GetEntropySize(dual_entropy_), 1)
+      : ADFunction(f.width + GetEntropySize(dual_entropy_), 1)
       , f(f), dual_entropy(std::move(dual_entropy_))
       , primal_idx(primal_begin)
       , dual_idx(dual_entropy.size())
@@ -126,17 +127,18 @@ public:
       int max_primal_index = 0;
       for (int i=0; i<dual_entropy.size(); i++)
       {
-         dual_entropy_size += dual_entropy[i]->n_input;
+         dual_entropy_size += dual_entropy[i]->width;
          max_primal_index = std::max(max_primal_index,
-                                     primal_begin[i] + dual_entropy[i]->n_input);
+                                     primal_begin[i] + dual_entropy[i]->width);
       }
-      MFEM_VERIFY(f.n_input >= max_primal_index,
-                  "ADPGFunctional: f.n_input must be larger than "
-                  "primal_begin[i] + dual_entropy.n_input[i] for all i");
+      MFEM_VERIFY(f.width >= max_primal_index,
+                  "ADPGFunctional: f.width must be larger than "
+                  "primal_begin[i] + dual_entropy.width[i] for all i");
    }
 
    ADPGFunctional(ADFunction &f, std::vector<ADEntropy*> dual_entropy,
-                  std::vector<GridFunction*> latent_k_gf, std::vector<int> &primal_begin, Evaluator::param_t alpha)
+                  std::vector<GridFunction*> latent_k_gf, std::vector<int> &primal_begin,
+                  Evaluator::param_t alpha)
       : ADPGFunctional(f, std::move(dual_entropy), primal_begin, alpha)
    {
       MFEM_VERIFY(latent_k_gf.size() == this->dual_entropy.size(),
@@ -153,12 +155,15 @@ public:
       }
    }
    // Multiple entropies
-   ADPGFunctional(ADFunction &f, std::vector<std::unique_ptr<ADEntropy>> &dual_entropy,
+   ADPGFunctional(ADFunction &f,
+                  std::vector<std::unique_ptr<ADEntropy>> &dual_entropy,
                   std::vector<int> &primal_begin, Evaluator::param_t alpha)
       : ADPGFunctional(f, uniquevec2ptrvec(dual_entropy), primal_begin, alpha)
    {}
-   ADPGFunctional(ADFunction &f, std::vector<std::unique_ptr<ADEntropy>> &dual_entropy,
-                  std::vector<std::unique_ptr<GridFunction>> &latent_k_gf, std::vector<int> primal_begin, Evaluator::param_t alpha)
+   ADPGFunctional(ADFunction &f,
+                  std::vector<std::unique_ptr<ADEntropy>> &dual_entropy,
+                  std::vector<std::unique_ptr<GridFunction>> &latent_k_gf,
+                  std::vector<int> primal_begin, Evaluator::param_t alpha)
       : ADPGFunctional(f, uniquevec2ptrvec(dual_entropy),
                        uniquevec2ptrvec(latent_k_gf), primal_begin, alpha)
    {}
@@ -194,7 +199,7 @@ public:
    AD_IMPL(T, V, M, x_psi,
    {
       // variables
-      const V x(x_psi.GetData(), f.n_input);
+      const V x(x_psi.GetData(), f.width);
       V psi;
 
       // evaluate mixed value
@@ -221,7 +226,7 @@ class ADLambdaPGFunctional : public ADPGFunctional
    AD_IMPL(T, V, M, x_lambda,
    {
       // variables
-      const V x(x_lambda.GetData(), f.n_input);
+      const V x(x_lambda.GetData(), f.width);
       V lambda;
       V latent;
 
@@ -287,7 +292,8 @@ protected:
    mutable real_t shift;
    mutable real_t scale;
 public:
-   FermiDiracEntropy(Evaluator::param_t lower_bound, Evaluator::param_t upper_bound)
+   FermiDiracEntropy(Evaluator::param_t lower_bound,
+                     Evaluator::param_t upper_bound)
       : ADEntropy(1, 2)
       , upper_bound(*evaluator.val.GetData())
       , lower_bound(*(evaluator.val.GetData()+1))
@@ -349,8 +355,8 @@ class SimplexEntropy : public ADEntropy
 {
    const real_t &scale;
 public:
-   SimplexEntropy(int n_input, Evaluator::param_t bound)
-      : ADEntropy(n_input, 1), scale(*evaluator.val.GetData())
+   SimplexEntropy(int width, Evaluator::param_t bound)
+      : ADEntropy(width, 1), scale(*evaluator.val.GetData())
    {
       evaluator.Add(bound);
       MFEM_VERIFY(evaluator.val.GetBlock(0).Size() == 1,
@@ -410,7 +416,7 @@ public:
       , alpha(alpha)
       , entropy_cf(entropy)
       , entropy_hessian_cf(entropy_cf.Hessian())
-      , identity_cf(entropy.n_input)
+      , identity_cf(entropy.width)
       , entropy_prec_cf(entropy_hessian_cf, identity_cf, -1.0, -1.0)
    {
       entropy_cf.AddInput(&psi);
@@ -461,7 +467,8 @@ public:
       offsets = &blocks->RowOffsets();
       MFEM_VERIFY(offsets->Size() == 3, "Only two blocks supported");
 
-      const HypreParMatrix * A = dynamic_cast<const HypreParMatrix*>(&blocks->GetBlock(0,0));
+      const HypreParMatrix * A = dynamic_cast<const HypreParMatrix*>
+                                 (&blocks->GetBlock(0,0));
       MFEM_VERIFY(A != nullptr, "Not a HypreParMatrix");
       stiffness_prec = std::make_unique<HypreBoomerAMG>(*A);
       stiffness_prec->SetPrintLevel(0);
@@ -568,7 +575,7 @@ public:
       {
          for (int i=0; i<prefix; i++) { out << " "; }
          out << "Average Linear Solver Iterations: " << (numIterations /
-               (it + 1.)) << std::endl;
+                                                         (it + 1.)) << std::endl;
          numIterations = 0;
          return;
       }
@@ -576,6 +583,180 @@ public:
       if (petsc_solver) { numIterations += petsc_solver->GetNumIterations(); }
 #endif
       if (mfem_solver) { numIterations += mfem_solver->GetNumIterations(); }
+   }
+};
+
+class BregmanDykstra : public IterativeSolver
+{
+private:
+   QuadratureSpace &qspace;
+   ADEntropy &entropy;
+   const int vdim;
+   mutable DifferentiableCoefficient entropy_cf;
+   VectorCoefficient &primal_cf;
+   mutable QuadratureFunction latent;
+   mutable QuadratureFunction latent_k;
+   mutable QuadratureFunction gradient;
+   mutable QuadratureFunction latent_freeze;
+   std::vector<ADFunction*> constraints;
+   mutable std::vector<std::unique_ptr<DifferentiableCoefficient>> constraint_cfs;
+   std::vector<real_t> targets;
+   mutable std::vector<std::unique_ptr<QuadratureFunction>> qi;
+   int max_sub_iter;
+public:
+   BregmanDykstra(QuadratureSpace &qspace_, ADEntropy &entropy)
+      : qspace(qspace_)
+      , entropy(entropy), vdim(entropy.width)
+      , entropy_cf(entropy), primal_cf(entropy_cf.Gradient())
+      , latent(qspace, vdim), latent_k(qspace, vdim)
+      , gradient(qspace, vdim)
+   {
+      entropy_cf.AddInput(&latent);
+#ifdef MFEM_USE_MPI
+      ParMesh *mesh = dynamic_cast<ParMesh*>(qspace.GetMesh());
+      if (mesh) { SetComm(mesh->GetComm()); }
+#endif
+      rel_tol = 1e-08;
+      abs_tol = 1e-08;
+      max_iter = 1000;
+      max_sub_iter = 1000;
+      width = height = vdim*qspace.GetSize();
+   }
+   void SetMaxSubIter(int n) { max_sub_iter = n; }
+
+   void AddConstraint(ADFunction &constraint, real_t target=0.0)
+   {
+      MFEM_VERIFY(constraint.width == vdim,
+                  "Constraint input dimension does not match.");
+      constraints.push_back(&constraint);
+      constraint_cfs.push_back(
+         std::make_unique<DifferentiableCoefficient>(constraint));
+      constraint_cfs.back()->AddInput(&primal_cf);
+      targets.push_back(target);
+
+      qi.push_back(std::make_unique<QuadratureFunction>(qspace, vdim));
+   }
+
+   /// @brief Project latent0 onto the intersection of the convex sets defined by the constraints
+   /// latent0 and opt_latent can be the same vector
+   void Mult(const Vector &latent0, Vector &opt_latent) const override
+   {
+      MFEM_VERIFY(latent0.Size() == width,
+                  "Input vector size does not match operator width.");
+      opt_latent.SetSize(height);
+      const QuadratureFunction x_qf(&qspace, latent0.GetData(), vdim);
+      latent.SetData(opt_latent.GetData());
+      latent = latent0;
+      Vector constraint_val(constraints.size());
+      Vector qi_norm(constraints.size());
+      for (int j=0; j<constraints.size(); j++)
+      {
+         constraint_val[j] = qspace.Integrate(*constraint_cfs[j]) - targets[j];
+         *qi[j] = 0.0;
+      }
+      constraint_val.Print();
+      for (final_iter=0; final_iter<max_iter; final_iter++)
+      {
+         for (int j=0; j<constraints.size(); j++)
+         {
+            latent_k = latent;
+            real_t cval = qspace.Integrate(*constraint_cfs[j]) - targets[j];
+            constraint_cfs[j]->Gradient().Project(gradient);
+            real_t target = dot(gradient, primal_cf) - cval;
+            TangentProjection(j, target);
+            latent_k -= latent;
+            *qi[j] += latent_k;
+         }
+         for (int j=0; j<constraints.size(); j++)
+         {
+            constraint_val[j] = qspace.Integrate(*constraint_cfs[j]) - targets[j];
+            qi_norm[j] = Dot(*qi[j], *qi[j]);
+         }
+         constraint_val.Print();
+         if (constraint_val.Normlinf() < abs_tol)
+         {
+            break;
+         }
+      }
+   }
+
+private:
+   using IterativeSolver::Dot;
+
+   void TangentProjection(const int i, const real_t target) const
+   {
+      real_t c, fc;
+      int n, side = 0;
+      latent_freeze = latent;
+      auto f = [&](real_t x)
+      {
+         add(latent_freeze, x, gradient, latent);
+         return qspace.Integrate(*constraint_cfs[i]) - target;
+      };
+      real_t f0 = f(0.0);
+      if (f0 < abs_tol) { return; }
+      real_t a = -1e04, b = 1e04;
+      real_t fa = f(a);
+      real_t fb = f(b);
+      /// Shift bounds if necessary
+      if (fa * fb > 0)
+      {
+         real_t diff = b - a;
+         if (fa > 0) // both positive
+         {
+            while (fa > 0)
+            {
+               b = a; fb = fa;
+               a -= diff;
+               fa = f(a);
+            }
+         }
+         else // both negative
+         {
+            while (fb < 0)
+            {
+               a = b; fa = fb;
+               b += diff;
+               fb = f(b);
+            }
+         }
+      }
+
+
+      for (n = 0; n < max_sub_iter; n++)
+      {
+         if (fabs(b - a) < rel_tol * fabs(b + a)) { break; }
+         c = (fa * b - fb * a) / (fa - fb);
+
+         fc = f(c);
+
+         if (fabs(fc) < abs_tol) { break; }
+
+         if (fc * fb > 0)
+         {
+            /* fc and fb have same sign, copy c to b */
+            b = c; fb = fc;
+            if (side == -1)
+            {
+               fa /= 2;
+            }
+            side = -1;
+         }
+         else if (fa * fc > 0)
+         {
+            /* fc and fa have same sign, copy c to a */
+            a = c; fa = fc;
+            if (side == +1)
+            {
+               fb /= 2;
+            }
+            side = +1;
+         }
+         else
+         {
+            break;
+         }
+      }
    }
 };
 

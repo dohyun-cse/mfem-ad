@@ -2,7 +2,6 @@
 #include "mfem.hpp"
 #include "logger.hpp"
 #include "ad_intg.hpp"
-#include "tools.hpp"
 
 using namespace std;
 using namespace mfem;
@@ -119,7 +118,7 @@ int main(int argc, char *argv[])
    lin_solver.SetMaxIter(1e04);
    lin_solver.SetKDim(100);
 
-   BlockOperator &darcy_op = bnlf.GetGradient(flux_and_potential);
+   BlockOperator &darcy_op = static_cast<BlockOperator&>(bnlf.GetGradient(flux_and_potential));
    Vector Md(flux_fes.GetTrueVSize());
    HypreParMatrix &M = static_cast<HypreParMatrix&>(darcy_op.GetBlock(0,0));
    HypreParMatrix &B = static_cast<HypreParMatrix&>(darcy_op.GetBlock(1,0));

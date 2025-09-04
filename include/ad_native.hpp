@@ -232,14 +232,15 @@ public:
    { ProcessParameters(evaluator.Eval(Tr, ip)); }
    virtual void ProcessParameters(const BlockVector &param_val) const
    { }
+   virtual ~ADFunction() = default;
 
-   const int n_input;
-   ADFunction(int n_input): n_input(n_input) {}
+   const int width;
+   ADFunction(int n): width(n) {}
    // Constructor with capacity for evaluator.
    // This is useful when the parameter size is known in advance,
    // so that we can get references to the parameters at construction time.
    ADFunction(int n_input, int capacity)
-      : n_input(n_input), evaluator(capacity)
+      : width(n_input), evaluator(capacity)
    {
       MFEM_ASSERT(n_input > 0, "ADFunction: n_input must be positive");
    }
@@ -285,11 +286,11 @@ public:
 class ADVectorFunction : public ADFunction
 {
 public:
-   int n_output;
-   ADVectorFunction(int n_input, int n_output)
-      : ADFunction(n_input), n_output(n_output)
+   const int height;
+   ADVectorFunction(int h, int w)
+      : ADFunction(w), height(h)
    {
-      MFEM_ASSERT(n_input > 0 && n_output > 0,
+      MFEM_ASSERT(width > 0 && height > 0,
                   "ADVectorFunction: n_input and n_output must be positive");
    }
 
@@ -379,7 +380,7 @@ protected:
 public:
    ADFunction &f;
    ADGradientFunction(ADFunction& f):
-      ADVectorFunction(f.n_input, f.n_input), f(f)
+      ADVectorFunction(f.width, f.width), f(f)
    {}
    void operator()(const Vector &x, Vector &F) const override
    {
@@ -397,34 +398,39 @@ public:
 
 class DifferentiableCoefficient : public Coefficient
 {
+protected:
+   Evaluator evaluator;
+
+   ADFunction &f;
 private:
-   int idx; // index of the next input variable
 
    class GradientCoefficient : public VectorCoefficient
    {
       DifferentiableCoefficient &c;
       int start, end;
    public:
-      GradientCoefficient(int dim, DifferentiableCoefficient &c)
-         : VectorCoefficient(dim), c(c), start(0), end(dim) { }
+      GradientCoefficient(DifferentiableCoefficient &c_)
+         : VectorCoefficient(c_.Width()), c(c_), start(0), end(vdim) { }
       void SetRange(int s, int e) { start = s; end = e; vdim = e - s; }
       void Eval(Vector &J, ElementTransformation &T,
                 const IntegrationPoint &ip) override
       {
-         return c.f.Gradient(c.evaluator.Eval(T, ip), T, ip, J, start, end);
+         c.f.Gradient(c.evaluator.Eval(T, ip), T, ip, J, start, end);
       }
    };
 
-   friend class GradientCoefficient;
-   GradientCoefficient grad_cf;
+   mutable GradientCoefficient grad_cf;
 
    class HessianCoefficient : public MatrixCoefficient
    {
       DifferentiableCoefficient &c;
       int istart, iend, jstart, jend;
    public:
-      HessianCoefficient(int dim, DifferentiableCoefficient &c)
-         : MatrixCoefficient(dim), c(c), istart(0), iend(dim), jstart(0), jend(dim) { }
+      HessianCoefficient(DifferentiableCoefficient &c_)
+         : MatrixCoefficient(c_.f.width), c(c_)
+         , istart(0), iend(height)
+         , jstart(0), jend(width)
+      { }
       void SetRange(int is, int ie, int js, int je)
       {
          istart = is; iend = ie; height = ie - is;
@@ -432,21 +438,20 @@ private:
       }
       void Eval(DenseMatrix &H, ElementTransformation &T,
                 const IntegrationPoint &ip) override
-      { return c.f.Hessian(c.evaluator.Eval(T, ip), T, ip, H, istart, iend, jstart, jend); }
+      {
+         return c.f.Hessian(c.evaluator.Eval(T, ip), T, ip, H,
+                            istart, iend, jstart, jend);
+      }
    };
 
    friend class HessianCoefficient;
-   HessianCoefficient hess_cf;
+   mutable HessianCoefficient hess_cf;
 
-protected:
-   Evaluator evaluator;
-
-   ADFunction &f;
 public:
    DifferentiableCoefficient(ADFunction &f)
-      : f(f), idx(0)
-      , grad_cf(f.n_input, *this)
-      , hess_cf(f.n_input, *this)
+      : f(f)
+      , grad_cf(*this)
+      , hess_cf(*this)
    {}
    DifferentiableCoefficient &AddInput(Evaluator::param_t param, bool owns = false)
    {
@@ -461,68 +466,80 @@ public:
 
    GradientCoefficient& Gradient(int start=0, int end=-1)
    {
-      if (end == -1) { end = f.n_input; }
+      if (end == -1) { end = f.width; }
       grad_cf.SetRange(start, end);
       return grad_cf;
    }
    HessianCoefficient& Hessian(int istart=0, int iend=-1, int jstart=0,
                                int jend=-1)
    {
-      if (iend == -1) { iend = f.n_input; }
-      if (jend == -1) { jend = f.n_input; }
+      if (iend == -1) { iend = f.width; }
+      if (jend == -1) { jend = f.width; }
       hess_cf.SetRange(istart, iend, jstart, jend);
       return hess_cf;
    }
+   int Width() const { return f.width; }
 
 protected:
 };
+
 class DifferentiableVectorCoefficient : public VectorCoefficient
 {
 private:
-   int idx; // index of the next input variable
 
+
+protected:
+   Evaluator inputs;
+
+   ADVectorFunction &f;
+private:
    class GradientCoefficient : public MatrixCoefficient
    {
       DifferentiableVectorCoefficient &c;
-      Vector fval;
    public:
-      GradientCoefficient(int in_dim, int out_dim, DifferentiableVectorCoefficient &c)
-         : MatrixCoefficient(out_dim, in_dim), c(c), fval(out_dim) { }
+      GradientCoefficient(DifferentiableVectorCoefficient &c)
+         : MatrixCoefficient(c.Height(), c.Width()), c(c) { }
       bool transpose = false;
+      void Transpose()
+      {
+         if (!transpose)
+         {
+            std::swap(height, width);
+         }
+         transpose = true;
+      }
       void Eval(DenseMatrix &J, ElementTransformation &T,
                 const IntegrationPoint &ip) override
       {
-         c.f.Gradient(c.evaluator.Eval(T, ip), T, ip, J);
+         c.f.Gradient(c.inputs.Eval(T, ip), T, ip, J);
          if (transpose) { J.Transpose(); }
       }
    };
 
    friend class GradientCoefficient;
    GradientCoefficient grad_cf;
-
-protected:
-   Evaluator evaluator;
-
-   ADVectorFunction &f;
 public:
    DifferentiableVectorCoefficient(ADVectorFunction &f)
-      : VectorCoefficient(f.n_output), f(f), idx(0)
-      , grad_cf(f.n_input, f.n_output, *this)
+      : VectorCoefficient(f.height)
+      , f(f)
+      , grad_cf(*this)
    {}
    DifferentiableVectorCoefficient &AddInput(Evaluator::param_t param,
                                              bool owns = false)
    {
-      evaluator.Add(param, owns);
+      inputs.Add(param, owns);
       return *this;
    }
+   int Width() const { return f.width; }
+   int Height() const { return f.height; }
 
    void Eval(Vector &fx, ElementTransformation &T,
              const IntegrationPoint &ip) override
-   { f(evaluator.Eval(T, ip), T, ip, fx); }
+   { f(inputs.Eval(T, ip), T, ip, fx); }
 
    GradientCoefficient& Gradient(bool transpose=false)
    {
-      grad_cf.transpose = transpose;
+      if (transpose) { grad_cf.Transpose(); }
       return grad_cf;
    }
 
@@ -540,9 +557,9 @@ protected:
    using ADFunction::operator();                                                       \
    real_t operator()(const Vector &var) const override                                 \
    {                                                                                   \
-      MFEM_ASSERT(var.Size() == n_input,                                               \
+      MFEM_ASSERT(var.Size() == width,                                                 \
                  "ADFunction::operator(): var.Size()=" << var.Size()                   \
-                  <<  " must match n_input=" << n_input)                               \
+                  <<  " must match width=" << width)                                   \
       using SCALAR = real_t;                                                           \
       using VEC = Vector;                                                              \
       using MAT = DenseMatrix;                                                         \
@@ -551,9 +568,9 @@ protected:
                                                                                        \
    ADReal_t operator()(const ADVector &var) const override                             \
    {                                                                                   \
-      MFEM_ASSERT(var.Size() == n_input,                                               \
+      MFEM_ASSERT(var.Size() == width,                                                 \
                  "ADFunction::operator(): var.Size()=" << var.Size()                   \
-                  <<  " must match n_input=" << n_input)                               \
+                  <<  " must match width=" << width)                                   \
       using SCALAR = ADReal_t;                                                         \
       using VEC = ADVector;                                                            \
       using MAT = ADMatrix;                                                            \
@@ -562,9 +579,9 @@ protected:
                                                                                        \
    AD2Real_t operator()(const AD2Vector &var) const override                           \
    {                                                                                   \
-      MFEM_ASSERT(var.Size() == n_input,                                               \
+      MFEM_ASSERT(var.Size() == width,                                                 \
                  "ADFunction::operator(): var.Size()=" << var.Size()                   \
-                  <<  " must match n_input=" << n_input)                               \
+                  <<  " must match width=" << width)                                   \
       using SCALAR = AD2Real_t;                                                        \
       using VEC = AD2Vector;                                                           \
       using MAT = AD2Matrix;                                                           \
@@ -586,9 +603,9 @@ protected:
                                                                                        \
    void operator()(const Vector &var, Vector &result) const override                   \
    {                                                                                   \
-      MFEM_ASSERT(var.Size() == n_input,                                               \
+      MFEM_ASSERT(var.Size() == width,                                                 \
                  "ADFunction::operator(): var.Size()=" << var.Size()                   \
-                  <<  " must match n_input=" << n_input)                               \
+                  <<  " must match width=" << width)                                   \
       using SCALAR = real_t;                                                           \
       using VEC = Vector;                                                              \
       using MAT = DenseMatrix;                                                         \
@@ -597,9 +614,9 @@ protected:
                                                                                        \
    void operator()(const ADVector &var, ADVector &result) const override               \
    {                                                                                   \
-      MFEM_ASSERT(var.Size() == n_input,                                               \
+      MFEM_ASSERT(var.Size() == width,                                                 \
                  "ADFunction::operator(): var.Size()=" << var.Size()                   \
-                  <<  " must match n_input=" << n_input)                               \
+                  <<  " must match width=" << width)                                   \
       using SCALAR = ADReal_t;                                                         \
       using VEC = ADVector;                                                            \
       using MAT = ADMatrix;                                                            \
@@ -608,9 +625,9 @@ protected:
                                                                                        \
    void operator()(const AD2Vector &var, AD2Vector &result) const override             \
    {                                                                                   \
-      MFEM_ASSERT(var.Size() == n_input,                                               \
+      MFEM_ASSERT(var.Size() == width,                                                 \
                  "ADFunction::operator(): var.Size()=" << var.Size()                   \
-                  <<  " must match n_input=" << n_input)                               \
+                  <<  " must match width=" << width)                                   \
       using SCALAR = AD2Real_t;                                                        \
       using VEC = AD2Vector;                                                           \
       using MAT = AD2Matrix;                                                           \
@@ -645,8 +662,8 @@ public:
    {
       int i = AddParameter(param);
       int size = evaluator.val.GetBlock(i).Size();
-      MFEM_VERIFY(size == 1 || size == n_input || size == n_input*n_input,
-                  "Incorrect size for K. Dimension is " << n_input << "but K has size " << size);
+      MFEM_VERIFY(size == 1 || size == width || size == width*width,
+                  "Incorrect size for K. Dimension is " << width << "but K has size " << size);
    }
 
    AD_IMPL(T, V, M, gradu,
@@ -693,7 +710,7 @@ class DiffEnergy : public ADFunction
    mutable const Vector *target;
 public:
    DiffEnergy(const ADFunction &energy)
-      : ADFunction(energy.n_input)
+      : ADFunction(energy.width)
       , energy(energy)
    { }
 
@@ -701,9 +718,9 @@ public:
       : DiffEnergy(energy)
    {
       int i = AddParameter(other);
-      MFEM_VERIFY(evaluator.val.GetBlock(0).Size() == n_input,
+      MFEM_VERIFY(evaluator.val.GetBlock(0).Size() == width,
                   "DiffEnergy: The provided target has the wrong size. "
-                  "Expected " << n_input << ", got " << evaluator.val.GetBlock(0).Size());
+                  "Expected " << width << ", got " << evaluator.val.GetBlock(0).Size());
    }
 
    void SetTarget(Evaluator::param_t &target)
@@ -712,9 +729,9 @@ public:
       { evaluator.Replace(0, target); }
       else
       { evaluator.Add(target); }
-      MFEM_VERIFY(evaluator.val.GetBlock(0).Size() == n_input,
+      MFEM_VERIFY(evaluator.val.GetBlock(0).Size() == width,
                   "DiffEnergy: The provided target has the wrong size. "
-                  "Expected " << n_input << ", got " << evaluator.val.GetBlock(0).Size());
+                  "Expected " << width << ", got " << evaluator.val.GetBlock(0).Size());
    }
 
    void ProcessParameters(const BlockVector &x) const override
@@ -725,7 +742,7 @@ public:
    AD_IMPL(T, V, M, x,
    {
       V diff(x);
-      for (int i=0; i<n_input; i++)
+      for (int i=0; i<width; i++)
       { diff[i] -= (*target)[i]; }
       return energy(diff);
    });
@@ -788,7 +805,7 @@ private:
 public:
 
    Lagrangian(ADFunction &objective, const int n_eq_con)
-      : ADFunction(objective.n_input+n_eq_con)
+      : ADFunction(objective.width+n_eq_con)
       , objective(objective)
    {}
 
@@ -813,8 +830,8 @@ public:
 
    AD_IMPL(T, V, M, x_and_lambda,
    {
-      const V x(x_and_lambda.GetData(), objective.n_input);
-      const V lambda(x_and_lambda.GetData() + objective.n_input,
+      const V x(x_and_lambda.GetData(), objective.width);
+      const V lambda(x_and_lambda.GetData() + objective.width,
                      eq_con.size());
       if (eval_mode >= 0) { return (*eq_con[eval_mode])(x); }
 
@@ -841,7 +858,7 @@ private:
 public:
 
    ALFunctional(ADFunction &objective)
-      : ADFunction(objective.n_input)
+      : ADFunction(objective.width)
       , objective(objective)
    {}
 
@@ -902,8 +919,6 @@ class ReducedADFunction : public ADFunction
 private:
    ADFunction &f;
    Evaluator fixed_input;
-   mutable Vector full_J;
-   mutable DenseMatrix full_H;
    const int offset;
    bool fix_after;
 public:
@@ -913,12 +928,10 @@ public:
       f.ProcessParameters(Tr, ip); // process paraent's parameters
       fixed_input.Eval(Tr, ip); // process fixed input
    }
-   void ProcessParameters(const BlockVector &param_val) const override
-   { f.ProcessParameters(param_val); }
    ReducedADFunction(ADFunction &org_f,
                      std::initializer_list<Evaluator::param_t> fixed_srcs,
                      int offset_, bool fix_after_)
-      : ADFunction(fix_after_ ? offset_ : org_f.n_input - offset_)
+      : ADFunction(fix_after_ ? offset_ : org_f.width - offset_)
       , f(org_f)
       , offset(offset_)
       , fix_after(fix_after_)
@@ -927,15 +940,15 @@ public:
       {
          fixed_input.Add(src);
       }
-      MFEM_VERIFY(fixed_input.val.Size() + n_input == f.n_input,
+      MFEM_VERIFY(fixed_input.val.Size() + width == f.width,
                   "ReducedADFunction: fixed input size + n_input must equal to original function input size");
    }
    AD_IMPL(T, V, M, x,
    {
-      V full_x(f.n_input);
+      V full_x(f.width);
       if (fix_after)
       {
-         for (int i=0; i<n_input; i++)
+         for (int i=0; i<width; i++)
          { full_x[i] = x[i]; }
          for (int i=0; i<fixed_input.val.Size(); i++)
          { full_x[i+offset] = fixed_input.val[i]; }
@@ -944,21 +957,19 @@ public:
       {
          for (int i=0; i<fixed_input.val.Size(); i++)
          { full_x[i] = fixed_input.val[i]; }
-         for (int i=0; i<n_input; i++)
+         for (int i=0; i<width; i++)
          { full_x[i+offset] = x[i]; }
       }
       return f(full_x);
    });
-   void Gradient(const Vector &x, Vector &J, int start=0,
+   void Gradient(const Vector &x, Vector &J, int start_=0,
                  int end=-1) const override
    {
-      if (end == -1) { end = n_input; }
-      MFEM_VERIFY(start != 0 && end != n_input,
-                  "ReducedADFunction::Gradient: Partial gradient not implemented yet");
-      Vector full_x(f.n_input);
+      if (end == -1) { end = width; }
+      Vector full_x(f.width);
       if (fix_after)
       {
-         for (int i=0; i<n_input; i++)
+         for (int i=0; i<width; i++)
          { full_x[i] = x[i]; }
          for (int i=0; i<fixed_input.val.Size(); i++)
          { full_x[i+offset] = fixed_input.val[i]; }
@@ -967,23 +978,22 @@ public:
       {
          for (int i=0; i<fixed_input.val.Size(); i++)
          { full_x[i] = fixed_input.val[i]; }
-         for (int i=0; i<n_input; i++)
+         for (int i=0; i<width; i++)
          { full_x[i+offset] = x[i]; }
       }
-      f.Gradient(full_x, J, fix_after ? 0 : offset, fix_after ? offset : f.n_input);
+      int start = start_ + (fix_after ? 0 : offset);
+      f.Gradient(full_x, J, start, start + end);
    }
    void Hessian(const Vector &x, DenseMatrix &H,
                 int istart=0, int iend=-1,
                 int jstart=0, int jend=-1) const override
    {
-      if (iend == -1) { iend = n_input; }
-      if (jend == -1) { jend = n_input; }
-      MFEM_VERIFY(istart != 0 && iend != n_input && jstart != 0 && jend != n_input,
-                  "ReducedADFunction::Hessian: Partial Hessian not implemented yet");
-      Vector full_x(f.n_input);
+      if (iend == -1) { iend = width; }
+      if (jend == -1) { jend = width; }
+      Vector full_x(f.width);
       if (fix_after)
       {
-         for (int i=0; i<n_input; i++)
+         for (int i=0; i<width; i++)
          { full_x[i] = x[i]; }
          for (int i=0; i<fixed_input.val.Size(); i++)
          { full_x[i+offset] = fixed_input.val[i]; }
@@ -992,12 +1002,12 @@ public:
       {
          for (int i=0; i<fixed_input.val.Size(); i++)
          { full_x[i] = fixed_input.val[i]; }
-         for (int i=0; i<n_input; i++)
+         for (int i=0; i<width; i++)
          { full_x[i+offset] = x[i]; }
       }
       int start = fix_after ? 0 : offset;
-      int end = fix_after ? offset : f.n_input;
-      f.Hessian(full_x, H, start, end, start, end);
+      f.Hessian(full_x, H, start + istart, start + iend, start + jstart,
+                start + jend);
    }
 };
 
@@ -1022,14 +1032,14 @@ public:
       std::initializer_list<Evaluator::param_t> param_srcs)
    {
       return std::make_unique<ReducedADFunction>(*this, param_srcs,
-                                                 n_input, parameter_begin);
+                                                 parameter_begin, true);
    }
 
    std::unique_ptr<ReducedADFunction> GetParamFunction(
       std::initializer_list<Evaluator::param_t> state_srcs)
    {
       return std::make_unique<ReducedADFunction>(*this, state_srcs,
-                                                 n_input, 0);
+                                                 parameter_begin, false);
    }
 };
 
