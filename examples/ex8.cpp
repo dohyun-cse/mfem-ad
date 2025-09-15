@@ -25,7 +25,7 @@ int main(int argc, char *argv[])
    MPI_Comm comm = MPI_COMM_WORLD;
    // file name to be saved
    std::stringstream filename;
-   filename << "ad-mmto-cantilever-";
+   filename << "ad-mmto-compliant-";
    // int rule_type = PGStepSizeRule::RuleType::CONSTANT;
    // real_t max_alpha = 1e06;
    // real_t alpha0 = 1.0;
@@ -35,7 +35,7 @@ int main(int argc, char *argv[])
 
    bool prefilter = true;
    bool postfilter = false;
-   bool use_blending = true;
+   bool use_blending = false;
 
    int order = 1;
    int ref_levels = 0;
@@ -69,13 +69,13 @@ int main(int argc, char *argv[])
    if (myid != 0) { out.Disable(); }
    MFEM_VERIFY(order >= 1, "Order must be at least 1.");
 
-   const int numMaterials = 5;
+   const int numMaterials = 2;
    DenseMatrix E(1, numMaterials);
-   Vector rho{0.0, 1.0, 1.3, 1.5, 1.7};
+   Vector rho{0.0, 1.0};
    Vector mass_bound(numMaterials); // 0: total, i>0: individual
    mass_bound = mfem::infinity();
    rho(0) = 0.0; E(0,0) = 1e-08;
-   mass_bound(0) = 1.5;
+   mass_bound(0) = 0.25;
    for (int i=1; i<numMaterials; i++)
    {
       E(0, i) = i;
@@ -96,8 +96,8 @@ int main(int argc, char *argv[])
    MFEM_VERIFY(rho.Size() == numMaterials,
                "Young's modulus and density size do not match.");
 
-   Mesh ser_mesh = Mesh::MakeCartesian2D(6, 2, Element::Type::QUADRILATERAL, false,
-                                         3.0, 1.0);
+   Mesh ser_mesh = Mesh::MakeCartesian2D(2, 1, Element::Type::QUADRILATERAL, false,
+                                         1.0, 0.5);
    const int dim = ser_mesh.Dimension();
    for (int i = 0; i < ref_levels; i++)
    {
@@ -105,42 +105,71 @@ int main(int argc, char *argv[])
    }
    ParMesh mesh(comm, ser_mesh);
    ser_mesh.Clear();
+   // input port
+   MarkBoundary(mesh, 5, [ref_levels](const Vector &x) { return x[0] < (0.0 + 1e-08) && x[1] < (0.0 + std::pow(2.0,-6)); });
+   // output port
+   MarkBoundary(mesh, 6, [ref_levels](const Vector &x) { return x[0] > (1.0 - 1e-08) && x[1] < (0.0 + std::pow(2.0,-6)); });
+   // fixed
+   MarkBoundary(mesh, 7, [ref_levels](const Vector &x) { return x[0] < (0.0 + 1e-08) && x[1] > (0.5 - std::pow(2.0,-6)); });
 
-   Vector load_center{2.9, 0.5};
-   real_t load_radius = 0.1;
-   VectorFunctionCoefficient state_load_cf(dim, [load_center,
-                                                 load_radius](const Vector &x, Vector &f)
-   {
-      f.SetSize(x.Size());
-      f = 0.0;
-      f[x.Size()-1] = x.DistanceTo(load_center) < load_radius ? -1.0 : 0.0;
-   });
-
-   Array2D<int> ess_bdr(dim, 4);
+   Array2D<int> ess_bdr(dim, 7);
    {
       Array<int> curr_bdr(ess_bdr.NumCols());
       for (int i=0; i<dim; i++)
       {
          curr_bdr.MakeRef(ess_bdr.GetRow(i), ess_bdr.NumCols());
          curr_bdr = 0;
-         curr_bdr[3] = 1;
+         curr_bdr[7-1] = 1;
       }
    }
+   Vector d_in{1.0, 0.0}, d_out{-1.0, 0.0};
+   // Weighted direction
+   Vector d_in_weighted(d_in), d_out_weighted(d_out);
+   d_in_weighted *= 1.0;
+   d_out_weighted *= -1.0;
+   VectorConstantCoefficient d_in_cf(d_in);
+   VectorConstantCoefficient d_out_cf(d_out);
+   real_t k_in(1.0), k_out(0.005);
+   Array<int> bdr_in(7), bdr_out(7);
+   bdr_in = 0; bdr_in[5-1] = 1;
+   bdr_out = 0; bdr_out[6-1] = 1;
 
    H1_FECollection state_fec(order, dim);
    H1_FECollection filter_fec(order, dim);
+   L2_FECollection control_fec(order-1, dim);
 
    ParFiniteElementSpace state_fes(&mesh, &state_fec, dim);
+   ParFiniteElementSpace state_comp_fes(&mesh, &state_fec);
    ParFiniteElementSpace filter_fes(&mesh, &filter_fec);
-   QuadratureSpace qspace(&mesh, order*2 + 1);
+   ParFiniteElementSpace control_fes(&mesh, &control_fec);
+   QuadratureSpace qspace(&mesh, order*2+1);
+
+   Array<int> filter_ess_bdr(7);
+   filter_ess_bdr = 0;
+   filter_ess_bdr[4] = 1;
+   filter_ess_bdr[5] = 1;
+   filter_ess_bdr[6] = 1;
+   Array<int> filter_ess_tdofs;
+   filter_fes.GetEssentialTrueDofs(filter_ess_bdr, filter_ess_tdofs);
+   Array<int> filter_toffsets(numMaterials+1);
+   filter_toffsets = filter_fes.GetTrueVSize();
+   filter_toffsets[0] = 0;
+   filter_toffsets.PartialSum();
+   BlockVector filter_tvec(filter_toffsets);
+   filter_tvec = 0.0;
+   filter_tvec.GetBlock(numMaterials-1).SetSubVector(filter_ess_tdofs, 1.0); // fix last material
+
 
    Array<int> state_ess_tdofs;
    GetEssentialTrueDofs(state_fes, ess_bdr, state_ess_tdofs);
 
    ParGridFunction state_gf(&state_fes);
+   ParGridFunction state_x_gf(&state_comp_fes, state_gf.GetData());
+   ParGridFunction state_y_gf(&state_comp_fes,
+                              state_gf.GetData() + state_comp_fes.GetVSize());
    Vector state_tvec(state_fes.GetTrueVSize());
    state_gf = 0.0;
-   state_tvec = 0.0;
+   state_gf.GetTrueDofs(state_tvec);
    QuadratureFunction latent(qspace, numMaterials);
    QuadratureFunction indicator(qspace, numMaterials);
    QuadratureFunction material(qspace);
@@ -148,7 +177,7 @@ int main(int argc, char *argv[])
    QuadratureFunction latent_k(qspace, numMaterials);
    QuadratureFunction indicator_k(qspace, numMaterials);
    QuadratureFunction gradient_k(qspace, numMaterials);
-   QuadratureFunction dfdP(qspace);
+   QuadratureFunction dJdP(qspace);
    QuadratureFunction diff_indicator(qspace, numMaterials);
    latent = log(rho.Sum() / numMaterials * 0.5);
    gradient = 0.0;
@@ -174,7 +203,7 @@ int main(int argc, char *argv[])
    if (prefilter)
    {
       indicator_filter = std::make_unique<HelmholtzFilter>(
-                            qspace, filter_fes, 0.05, numMaterials);
+                            qspace, filter_fes, 0.05, numMaterials, filter_ess_bdr, &filter_tvec);
       material_op.AddOperation(*indicator_filter);
    }
    std::unique_ptr<ADVectorFunction> simp_func;
@@ -198,10 +227,20 @@ int main(int argc, char *argv[])
    ParametrizedLinearElasticityEnergy elasticity_energy(dim, nu);
 
    ParLinearForm load(&state_fes);
-   load.AddDomainIntegrator(new VectorDomainLFIntegrator(state_load_cf));
    Vector load_dual_tvec(state_fes.GetTrueVSize());
+   load.AddBdrFaceIntegrator(new VectorBoundaryLFIntegrator(d_in_cf),
+                             bdr_in);
    load.Assemble();
    load.ParallelAssemble(load_dual_tvec);
+
+   ParLinearForm dJdu(&state_fes);
+   Vector dJdu_tvec(state_fes.GetTrueVSize());
+   dJdu.AddBdrFaceIntegrator(new VectorBoundaryLFIntegrator(d_out_cf),
+                             bdr_out);
+   dJdu.Assemble();
+   dJdu.ParallelAssemble(dJdu_tvec);
+   dJdu_tvec.Neg(); // minimize $- u \cdot d$
+
    BregmanDykstra projector(qspace, entropy);
    std::vector<std::unique_ptr<ADFunction>> constraints;
    for (int i=0; i<numMaterials; i++)
@@ -217,27 +256,33 @@ int main(int argc, char *argv[])
    density_cf.AddInput(&indicator);
 
    ParametrizedElasticitySolver state_solver(state_fes, qspace, state_ess_tdofs,
-                                             load_dual_tvec, elasticity_energy, false);
-   auto f = [&]()
+                                             load_dual_tvec, elasticity_energy, true);
+   auto state_form = state_solver.GetStateForm();
+   state_form.AddBdrFaceIntegrator(
+      new DirectionalHookesLawBdrIntegrator(k_in, &d_in_cf), bdr_in);
+   state_form.AddBdrFaceIntegrator(
+      new DirectionalHookesLawBdrIntegrator(k_out, &d_out_cf), bdr_out);
+
+   auto J = [&]()
    {
       indicator_cf.Project(indicator);
       material_op.Mult(indicator, material);
       state_solver.Mult(material, state_tvec);
       state_gf.SetFromTrueDofs(state_tvec);
-      return InnerProduct(comm, state_tvec, load_dual_tvec);
+      return InnerProduct(comm, state_tvec, dJdu_tvec);
    };
-   auto grad_f = [&](Vector &g)
+   auto grad_J = [&](Vector &g)
    {
-      state_solver.GetGradient(material).MultTranspose(load_dual_tvec, dfdP);
-      material_op.GetGradient(indicator).MultTranspose(dfdP, g);
+      state_solver.GetGradient(material).MultTranspose(dJdu_tvec, dJdP);
+      material_op.GetGradient(indicator).MultTranspose(dJdP, g);
    };
    projector.Mult(latent, latent);
    real_t obj, obj_k;
-   obj = f();
+   obj = J();
    std::unique_ptr<GLVis> glvis;
    std::unique_ptr<ParaViewDataCollection> paraview_dc;
    if (visualization) { glvis = std::make_unique<GLVis>("localhost", 19916, 400, 350, 4); }
-   if (paraview) { paraview_dc = std::make_unique<ParaViewDataCollection>("ParaView/Topopt", &mesh); }
+   if (paraview) { paraview_dc = std::make_unique<ParaViewDataCollection>("ParaView/CM", &mesh); }
    density_cf.Project(*indicator_list[0]);
    if (glvis) { glvis->Append(*indicator_list[0], "density", "Rjmm*********"); }
    if (paraview_dc) { paraview_dc->RegisterQField("density", indicator_list[0].get()); }
@@ -256,6 +301,12 @@ int main(int argc, char *argv[])
    }
    if (glvis)
    { glvis->Append(material, "material", "Rjmm*********"); }
+   if (glvis)
+   {
+      glvis->Append(state_gf, "state", "Rjmm*********");
+      glvis->Append(state_x_gf, "state_x", "Rjmm*********");
+      glvis->Append(state_y_gf, "state_y", "Rjmm*********");
+   }
    if (paraview_dc)
    {
       paraview_dc->SetCycle(0);
@@ -288,20 +339,23 @@ int main(int argc, char *argv[])
       gradient_k = gradient;
       obj_k = obj;
       // out << "Step " << i << " with " << step_size << std::endl;
-      grad_f(gradient);
+      grad_J(gradient);
       for (reeval=0; reeval<20; reeval++)
       {
          add(latent_k, -step_size, gradient, latent);
+         MFEM_VERIFY(gradient.CheckFinite() == 0, "Gradient contains NaN or Inf");
          projector.SetBracket(step_size*ParNormlinf(comm, gradient));
          projector.Mult(latent, latent);
          num_const_eval = projector.NumConstraintEvals();
          dykstra_it = projector.GetNumIterations();
-         obj = f();
+         obj = J();
          subtract(indicator, indicator_k, diff_indicator);
          diffval = dot(comm, diff_indicator, gradient);
          real_t suff_decr = obj_k + 1e-03*diffval;
+         if (it < 5) { break; } // no line search for first 5 iters
          if (obj <= suff_decr && diffval < 0.0) { break; }
          step_size *= 0.5;
+         out << "Armijo step back to " << step_size << std::endl;
       }
       density_cf.Project(*indicator_list[0]);
       for (int i=0; i<numMaterials; i++)

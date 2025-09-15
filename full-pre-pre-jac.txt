@@ -1,0 +1,127 @@
+Options used:
+   --order 2
+   --ref 5
+   --rule 0
+   --max-alpha 1e+06
+   --alpha0 0.1
+   --alpha-ratio 2
+   --alpha-ratio2 1.05
+   --no-visualization
+   --no-paraview
+   --preconditioned-gmres
+PG iteration 1 with alpha=0.1
+  Average Linear Solver Iterations: 107
+  Newton converged in 2 with residual 2.53376e-10
+  Lambda difference: 2.21195
+PG iteration 2 with alpha=0.1
+  Average Linear Solver Iterations: 182
+  Newton converged in 2 with residual 3.15509e-09
+  Lambda difference: 0.0361532
+PG iteration 3 with alpha=0.1
+  Average Linear Solver Iterations: 172
+  Newton converged in 2 with residual 1.042e-08
+  Lambda difference: 0.0365942
+PG iteration 4 with alpha=0.1
+  Average Linear Solver Iterations: 166.667
+  Newton converged in 2 with residual 2.05757e-08
+  Lambda difference: 0.0380377
+PG iteration 5 with alpha=0.1
+  Average Linear Solver Iterations: 162.667
+  Newton converged in 2 with residual 2.67133e-08
+  Lambda difference: 0.0406461
+PG iteration 6 with alpha=0.1
+  Average Linear Solver Iterations: 160.333
+  Newton converged in 2 with residual 3.18804e-08
+  Lambda difference: 0.0433344
+PG iteration 7 with alpha=0.1
+  Average Linear Solver Iterations: 159.333
+  Newton converged in 2 with residual 3.48448e-08
+  Lambda difference: 0.0456832
+PG iteration 8 with alpha=0.1
+  Average Linear Solver Iterations: 160.333
+  Newton converged in 2 with residual 3.36178e-08
+  Lambda difference: 0.0475382
+PG iteration 9 with alpha=0.1
+  Average Linear Solver Iterations: 163
+  Newton converged in 2 with residual 3.28641e-08
+  Lambda difference: 0.0488547
+PG iteration 10 with alpha=0.1
+  Average Linear Solver Iterations: 164.333
+  Newton converged in 2 with residual 2.86904e-08
+  Lambda difference: 0.0496422
+PG iteration 11 with alpha=0.1
+  Average Linear Solver Iterations: 166
+  Newton converged in 2 with residual 2.55397e-08
+  Lambda difference: 0.0499371
+PG iteration 12 with alpha=0.1
+  Average Linear Solver Iterations: 170
+  Newton converged in 2 with residual 2.333e-08
+  Lambda difference: 0.0497877
+PG iteration 13 with alpha=0.1
+  Average Linear Solver Iterations: 174.667
+  Newton converged in 2 with residual 2.01654e-08
+  Lambda difference: 0.0492475
+PG iteration 14 with alpha=0.1
+  Average Linear Solver Iterations: 180.333
+  Newton converged in 2 with residual 1.66759e-08
+  Lambda difference: 0.0483691
+PG iteration 15 with alpha=0.1
+  Average Linear Solver Iterations: 190
+  Newton converged in 2 with residual 1.39805e-08
+  Lambda difference: 0.0472056
+PG iteration 16 with alpha=0.1
+  Average Linear Solver Iterations: 206.333
+  Newton converged in 2 with residual 1.32594e-08
+  Lambda difference: 0.0458057
+PG iteration 17 with alpha=0.1
+  Average Linear Solver Iterations: 229.333
+  Newton converged in 2 with residual 9.80935e-09
+  Lambda difference: 0.0442149
+PG iteration 18 with alpha=0.1
+  Average Linear Solver Iterations: 258.333
+  Newton converged in 2 with residual 8.24344e-09
+  Lambda difference: 0.0424761
+PG iteration 19 with alpha=0.1
+  Average Linear Solver Iterations: 290.667
+  Newton converged in 2 with residual 7.69062e-09
+  Lambda difference: 0.0406282
+PG iteration 20 with alpha=0.1
+  Average Linear Solver Iterations: 326.667
+  Newton converged in 2 with residual 5.97998e-09
+  Lambda difference: 0.0387054
+PG iteration 21 with alpha=0.1
+  Average Linear Solver Iterations: 366.667
+  Newton converged in 2 with residual 5.02649e-09
+  Lambda difference: 0.0367375
+PG iteration 22 with alpha=0.1
+  Average Linear Solver Iterations: 413.667
+  Newton converged in 2 with residual 4.14199e-09
+  Lambda difference: 0.0347531
+PG iteration 23 with alpha=0.1
+  Average Linear Solver Iterations: 467
+  Newton converged in 2 with residual 3.82321e-09
+  Lambda difference: 0.0327737
+PG iteration 24 with alpha=0.1
+  Average Linear Solver Iterations: 525
+  Newton converged in 2 with residual 3.0089e-09
+  Lambda difference: 0.0308187
+PG iteration 25 with alpha=0.1
+  Average Linear Solver Iterations: 589
+  Newton converged in 2 with residual 2.68762e-09
+  Lambda difference: 0.0289061
+PG iteration 26 with alpha=0.1
+  Average Linear Solver Iterations: 655
+  Newton converged in 2 with residual 2.32234e-09
+  Lambda difference: 0.0270472
+PG iteration 27 with alpha=0.1
+  Average Linear Solver Iterations: 735.333
+  Newton converged in 2 with residual 2.00155e-09
+  Lambda difference: 0.025253
+PG iteration 28 with alpha=0.1
+  Average Linear Solver Iterations: 754
+  Newton converged in 2 with residual 1.75079e-09
+  Lambda difference: 0.0235321
+PG iteration 29 with alpha=0.1
+  Average Linear Solver Iterations: 834
+  Newton converged in 2 with residual 1.61701e-09
+  Lambda difference: 0.0218895

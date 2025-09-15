@@ -173,9 +173,9 @@ int main(int argc, char *argv[])
    solver.SetOperator(petsc_bnlf ? *petsc_bnlf : bnlf);
    IterativeSolver::PrintLevel print_level;
    solver.SetPrintLevel(print_level);
-   solver.SetAbsTol(1e-09);
+   solver.SetAbsTol(1e-07);
    solver.SetRelTol(0.0);
-   solver.SetMaxIter(20);
+   solver.SetMaxIter(50);
    solver.iterative_mode = true;
 
    GLVis glvis("localhost", 19916, 400, 350, 3);

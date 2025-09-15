@@ -26,6 +26,7 @@ private:
    QuadratureSpace &qspace;
    const int vdim;
    std::unique_ptr<HypreParMatrix> helmholtz_op;
+   std::unique_ptr<HypreParMatrix> helmholtz_elim_op;
    CGSolver helmholtz_solver;
    HypreBoomerAMG helmholtz_prec;
    mutable QuadratureFunction target_qf;
@@ -33,11 +34,16 @@ private:
    mutable Vector helmholtz_rhs;
    mutable Vector helmholtz_sol;
    mutable ParGridFunction helmholtz_gf;
+   Array<int> ess_tdofs;
+   BlockVector *sol_tvec;
+   mutable bool forward_mode = true;
 public:
    HelmholtzFilter(QuadratureSpace &qs,
                    ParFiniteElementSpace &fes,
                    const real_t filter_radius,
-                   const int vdim = 1)
+                   const int vdim = 1,
+                   Array<int> ess_bdr=Array<int>(),
+                   BlockVector* sol_tvec=nullptr)
       : ForwardBackwardOperator(qs.GetSize()*vdim)
       , qspace(qs)
       , vdim(vdim)
@@ -48,6 +54,7 @@ public:
       , helmholtz_rhs(fes.GetTrueVSize())
       , helmholtz_sol(fes.GetTrueVSize())
       , helmholtz_gf(&fes)
+      , sol_tvec(sol_tvec)
    {
       MFEM_VERIFY(fes.GetVDim() == 1,
                   "Helmholtz filter base space must be scalar.");
@@ -55,12 +62,14 @@ public:
                   "Helmholtz filter base space must be H1.");
       ParBilinearForm helmholtz(&fes);
       ConstantCoefficient eps_cf(filter_radius*filter_radius/12.0);
-      const IntegrationRule &ir = qs.GetIntRule(0);
-      helmholtz.AddDomainIntegrator(new MassIntegrator(&ir));
-      helmholtz.AddDomainIntegrator(new DiffusionIntegrator(eps_cf, &ir));
+      if (ess_bdr.Size() > 0) { fes.GetEssentialTrueDofs(ess_bdr, ess_tdofs); }
+      else { ess_tdofs.SetSize(0); }
+      helmholtz.AddDomainIntegrator(new MassIntegrator());
+      helmholtz.AddDomainIntegrator(new DiffusionIntegrator(eps_cf));
       helmholtz.Assemble();
       helmholtz.Finalize();
       helmholtz_op.reset(helmholtz.ParallelAssemble());
+      helmholtz_elim_op.reset(helmholtz_op->EliminateRowsCols(ess_tdofs));
       helmholtz_prec.SetPrintLevel(0);
       helmholtz_solver.SetRelTol(1e-08);
       helmholtz_solver.SetAbsTol(0);
@@ -85,16 +94,112 @@ public:
       y.SetSize(this->Height());
       QuadratureFunction x_qf(&qspace, x.GetData(), vdim);
       QuadratureFunction y_qf(&qspace, y.GetData(), vdim);
-      helmholtz_sol = 0.0;
+      real_t* sol_data;
+      const int N = helmholtz_sol.Size();
+      helmholtz_sol.StealData(&sol_data);
       for (int i=0; i<vdim; i++)
       {
          ExtractComponent(x_qf, i, target_qf);
          helmholtz_lf.Assemble();
          helmholtz_lf.ParallelAssemble(helmholtz_rhs);
+         if (sol_tvec && forward_mode)
+         {
+            helmholtz_sol.SetDataAndSize(sol_tvec->GetBlock(i).GetData(),
+                                         sol_tvec->GetBlock(i).Size());
+            helmholtz_op->EliminateBC(*helmholtz_elim_op, ess_tdofs, helmholtz_sol,
+                                      helmholtz_rhs);
+         }
+         else
+         {
+            helmholtz_sol.SetDataAndSize(sol_data, N);
+            helmholtz_sol = 0.0;
+            helmholtz_rhs.SetSubVector(ess_tdofs, 0.0);
+         }
          helmholtz_solver.Mult(helmholtz_rhs, helmholtz_sol);
          helmholtz_gf.SetFromTrueDofs(helmholtz_sol);
          target_qf.ProjectGridFunction(helmholtz_gf);
          SetComponent(target_qf, i, y_qf);
+      }
+      helmholtz_sol.SetDataAndSize(sol_data, N);
+      helmholtz_sol.MakeDataOwner();
+   }
+
+   /**
+    * @brief Solves the adjoint system.
+    * @details Since the Helmholtz operator is self-adjoint, this operation is
+    * identical to the forward `Mult` operation.
+    *
+    * @param[in] x Input vector (right-hand side of the adjoint system).
+    * @param[out] y Output vector (solution of the adjoint system).
+    */
+   void AdjointMult(const Vector &dJdy, Vector &dJdx) const override
+   {
+      forward_mode = false;
+      Mult(dJdy, dJdx);
+      forward_mode = true;
+   }
+};
+
+// forward: Interpolate L2 to Quadrature space
+// backward: Project Quadrature to L2 space
+class L2Projector : public ForwardBackwardOperator
+{
+private:
+   QuadratureSpace &qspace;
+   mutable GridFunction gf;
+   mutable QuadratureFunction qf;
+   mutable LinearForm lf;
+   BilinearForm l2_inv_bf;
+   Array<int> gf_toffsets;
+   Array<int> qf_toffsets;
+   const int vdim;
+public:
+   L2Projector(QuadratureSpace &qs,
+               ParFiniteElementSpace &fes,
+               const int vdim = 1)
+      : ForwardBackwardOperator(qs.GetSize()*vdim, fes.GetTrueVSize()*vdim)
+      , qspace(qs)
+      , gf(&fes)
+      , qf(qspace)
+      , l2_inv_bf(&fes)
+      , gf_toffsets(vdim+1)
+      , vdim(vdim)
+   {
+      MFEM_VERIFY(fes.GetVDim() == 1,
+                  "L2Projector base space must be scalar.");
+      MFEM_VERIFY(dynamic_cast<const L2_FECollection*>(fes.FEColl()) != nullptr,
+                  "L2Projector base space must be L2.");
+      gf_toffsets = fes.GetTrueVSize();
+      gf_toffsets[0] = 0;
+      gf_toffsets.PartialSum();
+      qf_toffsets = qs.GetSize();
+      qf_toffsets[0] = 0;
+      qf_toffsets.PartialSum();
+      l2_inv_bf.AddDomainIntegrator(new InverseIntegrator(new MassIntegrator()));
+      l2_inv_bf.Assemble();
+      lf.AddDomainIntegrator(new DomainQLFIntegrator(qf));
+   }
+   std::string Name() const override { return std::string("HelmholtzFilter"); }
+
+   /**
+    * @brief Interpolate from L2 space to quadrature space.
+    *
+    * @param[in] x Input vector in L2 space (ordering = NODES, x_1, .., x_N, y_1, ...)
+    * @param[out] y Output vector in quadrature space (ordering = VDIM, x_1, y_1, ...,)
+    */
+   void Mult(const Vector &x, Vector &y) const override
+   {
+      MFEM_VERIFY(x.Size() == this->Width(),
+                  "Input vector size does not match operator width.");
+      y.SetSize(this->Height());
+      BlockVector x_block(x.GetData(), gf_toffsets);
+      BlockVector y_block(y.GetData(), qf_toffsets);
+      QuadratureFunction y_qf(&qspace, y.GetData(), vdim);
+      for (int i=0; i<vdim; i++)
+      {
+         gf.SetData(x_block.GetBlock(i).GetData());
+         qf.ProjectGridFunction(gf);
+         SetComponent(qf, i, y_qf);
       }
    }
 
@@ -108,7 +213,17 @@ public:
     */
    void AdjointMult(const Vector &dJdy, Vector &dJdx) const override
    {
-      Mult(dJdy, dJdx);
+      MFEM_VERIFY(dJdy.Size() == this->Height(),
+                  "Input vector size does not match operator height.");
+      dJdx.SetSize(this->Width());
+      BlockVector dJdx_block(dJdx.GetData(), gf_toffsets);
+      QuadratureFunction dJdy_qf(&qspace, dJdy.GetData(), vdim);
+      for (int i=0; i<vdim; i++)
+      {
+         ExtractComponent(dJdy_qf, i, qf);
+         lf.Assemble();
+         l2_inv_bf.Mult(lf, dJdx_block.GetBlock(i));
+      }
    }
 };
 
@@ -359,7 +474,7 @@ public:
 
       Operator *state_op;
       if (mono_state_form) { state_op = mono_state_form.get(); }
-      else { state_form.get(); }
+      else { state_op = state_form.get(); }
       if (is_linear)
       {
          pde_solver->SetOperator(state_op->GetGradient(state_tvec));
@@ -389,18 +504,21 @@ protected:
 
       if (solve_adjoint)
       {
-         out << "Solving adjoint PDE..." << std::endl;
+         Operator *state_op;
+         if (mono_state_form) { state_op = mono_state_form.get(); }
+         else { state_op = state_form.get(); }
          if (pde_adjoint_solver)
          {
-            if (mono_state_form) { pde_adjoint_solver->SetOperator(mono_state_form->GetGradient(state_tvec)); }
-            else { pde_adjoint_solver->SetOperator(state_form->GetGradient(state_tvec)); }
+            pde_adjoint_solver->SetOperator(state_op->GetGradient(state_tvec));
             pde_adjoint_solver->Mult(dJdy, adjoint_tvec);
          }
          else
          {
-            pde_solver->SetOperator(state_form->GetGradient(state_tvec));
+            pde_solver->SetOperator(state_op->GetGradient(state_tvec));
             pde_solver->Mult(dJdy, adjoint_tvec);
          }
+         MFEM_VERIFY(adjoint_tvec.CheckFinite() == 0,
+                     "ParametrizedStateSolver::AdjointMult: adjoint_tvec is not finite.");
          for (int i=0; i<adjoint_gfs.size(); i++)
          {
             adjoint_gfs[i]->SetFromTrueDofs(adjoint_tvec.GetBlock(i));
@@ -477,6 +595,91 @@ public:
       SetupCFInput();
       SetupPDE();
       SetupSolvers();
+   }
+};
+class DirectionalHookesLawBdrIntegrator : public BlockNonlinearFormIntegrator
+{
+   // properties
+private:
+   VectorCoefficient *direction;
+   real_t k;
+   mutable Vector shape;
+   mutable DenseMatrix grad_elmat;
+
+protected:
+public:
+   // methods
+private:
+protected:
+public:
+   DirectionalHookesLawBdrIntegrator(const real_t k,
+                                     VectorCoefficient *direction)
+      : k(k), direction(direction) {}
+   void AssembleFaceVector(const Array<const FiniteElement *>&el1,
+                           const Array<const FiniteElement *>&dummy_el2,
+                           FaceElementTransformations &Tr,
+                           const Array<const Vector *> &elfuns,
+                           const Array<Vector*> &elvects) override
+   {
+      Array2D<DenseMatrix*> elmats(1,1);
+      elmats(0,0) = &grad_elmat;
+      AssembleFaceGrad(el1, dummy_el2, Tr, elfuns, elmats);
+      Vector &elvect = *elvects[0];
+      elvect.SetSize(grad_elmat.Height());
+      grad_elmat.Mult(*elfuns[0], elvect);
+   }
+   void AssembleFaceGrad(const Array<const FiniteElement *>&el1,
+                         const Array<const FiniteElement *>&dummy_el2,
+                         FaceElementTransformations &Tr,
+                         const Array<const Vector *> &dummy_elfun,
+                         const Array2D<DenseMatrix *> &elmats) override
+   {
+      const FiniteElement &el = *el1[0];
+      DenseMatrix &elmat = *elmats(0,0);
+      real_t kw;
+      int dim = el.GetDim();
+      int ndof = el.GetDof();
+      Vector dir(dim), nor(dim);
+
+      shape.SetSize(ndof);
+      elmat.SetSize(ndof*dim);
+      elmat = 0.0;
+
+      const IntegrationRule *ir = &IntRules.Get(Tr.GetGeometryType(),
+                                                el.GetOrder()*2);
+      MFEM_ASSERT(Tr.Elem2 == NULL, "DirectionalHookesLawBdrIntegrator "
+                  "only supports boundary faces.");
+
+      for (int p = 0; p < ir->GetNPoints(); p++)
+      {
+         const IntegrationPoint &ip = ir->IntPoint(p);
+
+         // Set the integration point in the face and the neighboring elements
+         Tr.SetAllIntPoints(&ip);
+
+         // Access the neighboring elements' integration points
+         // Note: eip2 will only contain valid data if Elem2 exists
+         const IntegrationPoint &eip1 = Tr.GetElement1IntPoint();
+
+         el.CalcPhysShape(*Tr.Elem1, shape);
+
+         direction->Eval(dir, *Tr.Elem1, eip1);
+
+         kw = k*ip.weight;
+         for (int d2=0; d2<dim; d2++)
+         {
+            for (int j = 0; j < ndof; j++)
+            {
+               for (int d1 = 0; d1 < dim; d1++)
+               {
+                  for (int i = 0; i < ndof; i++)
+                  {
+                     elmat(i+d1*ndof, j+d2*ndof) += kw * dir[d1] * dir[d2] * shape(i) * shape(j);
+                  }
+               }
+            }
+         }
+      }
    }
 };
 

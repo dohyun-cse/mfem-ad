@@ -280,7 +280,7 @@ public:
                   "ShannonEntropy: The provided bound has the wrong size. "
                   "Expected 1, got " << evaluator.val.GetBlock(0).Size());
    }
-   AD_IMPL(T, V, M, x, return sign*(exp(x[0]*sign)) + bound*x[0]; );
+   AD_IMPL(T, V, M, x, return exp(x[0]*sign) - sign*bound*x[0]; );
 };
 
 // Dual entropy for (negative) Fermi-Dirac with [lower, upper] bounds
@@ -603,6 +603,7 @@ private:
    std::vector<real_t> targets;
    mutable std::vector<std::unique_ptr<QuadratureFunction>> qi;
    int max_sub_iter;
+   real_t lower=-1e04, upper=1e04;
 public:
    BregmanDykstra(QuadratureSpace &qspace_, ADEntropy &entropy)
       : qspace(qspace_)
@@ -654,7 +655,7 @@ public:
          constraint_val[j] = qspace.Integrate(*constraint_cfs[j]) - targets[j];
          *qi[j] = 0.0;
       }
-      constraint_val.Print();
+      num_const_eval = 0;
       for (final_iter=0; final_iter<max_iter; final_iter++)
       {
          for (int j=0; j<constraints.size(); j++)
@@ -672,16 +673,42 @@ public:
             constraint_val[j] = qspace.Integrate(*constraint_cfs[j]) - targets[j];
             qi_norm[j] = Dot(*qi[j], *qi[j]);
          }
-         constraint_val.Print();
-         if (constraint_val.Normlinf() < abs_tol)
+         if (constraint_val.Max() < abs_tol)
          {
             break;
          }
       }
+      if (print_level > 0)
+      {
+         out << "BregmanDykstra: Completed in " << final_iter+1
+             << " iterations with " << num_const_eval
+             << " constraint evaluations. Max constraint violation = "
+             << constraint_val.Max() << std::endl;
+      }
+   }
+   int NumConstraintEvals() const { return num_const_eval; }
+   // Set the search interval [new_lower, new_upper]
+   // If the bounds do not bracket the root, they will be shifted.
+   void SetBracket(real_t new_lower, real_t new_upper)
+   {
+      MFEM_VERIFY(new_lower < new_upper,
+                  "BregmanDykstra: lower bound must be less than upper bound");
+      lower = new_lower;
+      upper = new_upper;
+   }
+   // Set the search interval [-new_bound, new_bound]
+   // If the bounds do not bracket the root, they will be shifted.
+   void SetBracket(real_t new_bound)
+   {
+      MFEM_VERIFY(new_bound > 0,
+                  "BregmanDykstra: lower bound must be less than upper bound");
+      lower = -new_bound;
+      upper = new_bound;
    }
 
 private:
    using IterativeSolver::Dot;
+   mutable int num_const_eval;
 
    void TangentProjection(const int i, const real_t target) const
    {
@@ -690,17 +717,29 @@ private:
       latent_freeze = latent;
       auto f = [&](real_t x)
       {
+         num_const_eval++;
          add(latent_freeze, x, gradient, latent);
          return qspace.Integrate(*constraint_cfs[i]) - target;
       };
       real_t f0 = f(0.0);
       if (f0 < abs_tol) { return; }
-      real_t a = -1e04, b = 1e04;
+      real_t a = lower, b = upper;
       real_t fa = f(a);
       real_t fb = f(b);
+      if (print_level > 1)
+      {
+         out << "  f(0) = " << f0
+             << " f(" << a << ") = " << fa
+             << " f(" << b << ") = " << fb
+             << std::endl;
+      }
       /// Shift bounds if necessary
       if (fa * fb > 0)
       {
+         if (print_level > 1)
+         {
+            out << "  Initial bounds do not bracket root, shifting..." << std::endl;
+         }
          real_t diff = b - a;
          if (fa > 0) // both positive
          {
@@ -719,6 +758,10 @@ private:
                b += diff;
                fb = f(b);
             }
+         }
+         if (print_level > 1)
+         {
+            out << "  f(0) = " << f0 << " f(a) = " << fa << " f(b) = " << fb << std::endl;
          }
       }
 

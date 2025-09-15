@@ -372,14 +372,13 @@ public:
       const IntegrationRule &ir = qs.GetIntRule(Tr.ElementNo);
       elvect.SetSize(el.GetDof());
       elvect = 0.0;
-      f.GetValues(Tr.ElementNo, fvals);
       shapevals.SetSize(el.GetDof());
       int offset = qs.Offset(Tr.ElementNo);
       for (int i=0; i<ir.GetNPoints(); i++)
       {
          const IntegrationPoint &ip = ir.IntPoint(i);
          el.CalcShape(ip, shapevals);
-         elvect.Add(fvals(i)*weights(offset + i), shapevals);
+         elvect.Add(f(offset + i)*weights(offset + i), shapevals);
       }
    }
 };
@@ -419,7 +418,7 @@ inline real_t dot(MPI_Comm comm, QuadratureFunction &a, QuadratureFunction &b)
    MFEM_VERIFY(a.GetSpace() == b.GetSpace(), "Quadrature space mismatch.");
    QuadratureSpaceBase *qs = a.GetSpace();
    Vector a_vals, b_vals;
-   real_t dot = 0.0;
+   real_t result = 0.0;
    const Vector &weights = qs->GetWeights();
    int ctr=0;
    for (int i=0; i<qs->GetNE(); i++)
@@ -429,18 +428,39 @@ inline real_t dot(MPI_Comm comm, QuadratureFunction &a, QuadratureFunction &b)
       {
          a.GetValues(i, j, a_vals);
          b.GetValues(i, j, b_vals);
-         dot += weights[ctr++] * (a_vals * b_vals);
+         result += weights[ctr++] * (a_vals * b_vals);
       }
    }
-   MPI_Allreduce(MPI_IN_PLACE, &dot, 1, MPITypeMap<real_t>::mpi_type, MPI_SUM,
+   MPI_Allreduce(MPI_IN_PLACE, &result, 1, MPITypeMap<real_t>::mpi_type, MPI_SUM,
                  comm);
-   return dot;
+   return result;
+}
+inline real_t ParNormL1(MPI_Comm comm, QuadratureFunction &a)
+{
+   QuadratureSpaceBase *qs = a.GetSpace();
+   Vector a_vals, b_vals;
+   real_t result = 0.0;
+   const Vector &weights = qs->GetWeights();
+   int ctr=0;
+   for (int i=0; i<qs->GetNE(); i++)
+   {
+      const IntegrationRule &ir = qs->GetIntRule(i);
+      for (int j=0; j<ir.GetNPoints(); j++)
+      {
+         a.GetValues(i, j, a_vals);
+         for (auto &v : a_vals) { result += weights[ctr] * fabs(v); }
+         ctr++;
+      }
+   }
+   MPI_Allreduce(MPI_IN_PLACE, &result, 1, MPITypeMap<real_t>::mpi_type, MPI_SUM,
+                 comm);
+   return result;
 }
 inline real_t dot(const QuadratureFunction &a, VectorCoefficient &b)
 {
    VectorQuadratureFunctionCoefficient a_cf(a);
-   InnerProductCoefficient sum_cf(a_cf, b);
-   return a.GetSpace()->Integrate(sum_cf);
+   InnerProductCoefficient dot_cf(a_cf, b);
+   return a.GetSpace()->Integrate(dot_cf);
 }
 
 /// @brief Get the essential true dofs from component-wise boundary conditions
@@ -460,4 +480,21 @@ inline void GetEssentialTrueDofs(FiniteElementSpace &fes,
       ess_tdofs.Append(curr_tdofs);
    }
 }
-};
+
+inline void MarkBoundary(Mesh &mesh, int attr,
+                         std::function<bool(const Vector&)>mask)
+{
+   Vector x(mesh.SpaceDimension());
+   for (int i=0; i<mesh.GetNBE(); i++)
+   {
+      FaceElementTransformations &Tr = *mesh.GetBdrFaceTransformations(i);
+      const IntegrationRule &ir = IntRules.Get(Tr.GetGeometryType(), 0);
+      Tr.Transform(ir[0], x);
+      if (mask(x))
+      {
+         mesh.SetBdrAttribute(i, attr);
+      }
+   }
+   mesh.SetAttributes(false, true);
+}
+}
