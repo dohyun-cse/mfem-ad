@@ -140,92 +140,6 @@ public:
    }
 };
 
-// forward: Interpolate L2 to Quadrature space
-// backward: Project Quadrature to L2 space
-class L2Projector : public ForwardBackwardOperator
-{
-private:
-   QuadratureSpace &qspace;
-   mutable GridFunction gf;
-   mutable QuadratureFunction qf;
-   mutable LinearForm lf;
-   BilinearForm l2_inv_bf;
-   Array<int> gf_toffsets;
-   Array<int> qf_toffsets;
-   const int vdim;
-public:
-   L2Projector(QuadratureSpace &qs,
-               ParFiniteElementSpace &fes,
-               const int vdim = 1)
-      : ForwardBackwardOperator(qs.GetSize()*vdim, fes.GetTrueVSize()*vdim)
-      , qspace(qs)
-      , gf(&fes)
-      , qf(qspace)
-      , l2_inv_bf(&fes)
-      , gf_toffsets(vdim+1)
-      , vdim(vdim)
-   {
-      MFEM_VERIFY(fes.GetVDim() == 1,
-                  "L2Projector base space must be scalar.");
-      MFEM_VERIFY(dynamic_cast<const L2_FECollection*>(fes.FEColl()) != nullptr,
-                  "L2Projector base space must be L2.");
-      gf_toffsets = fes.GetTrueVSize();
-      gf_toffsets[0] = 0;
-      gf_toffsets.PartialSum();
-      qf_toffsets = qs.GetSize();
-      qf_toffsets[0] = 0;
-      qf_toffsets.PartialSum();
-      l2_inv_bf.AddDomainIntegrator(new InverseIntegrator(new MassIntegrator()));
-      l2_inv_bf.Assemble();
-      lf.AddDomainIntegrator(new DomainQLFIntegrator(qf));
-   }
-   std::string Name() const override { return std::string("HelmholtzFilter"); }
-
-   /**
-    * @brief Interpolate from L2 space to quadrature space.
-    *
-    * @param[in] x Input vector in L2 space (ordering = NODES, x_1, .., x_N, y_1, ...)
-    * @param[out] y Output vector in quadrature space (ordering = VDIM, x_1, y_1, ...,)
-    */
-   void Mult(const Vector &x, Vector &y) const override
-   {
-      MFEM_VERIFY(x.Size() == this->Width(),
-                  "Input vector size does not match operator width.");
-      y.SetSize(this->Height());
-      BlockVector x_block(x.GetData(), gf_toffsets);
-      BlockVector y_block(y.GetData(), qf_toffsets);
-      QuadratureFunction y_qf(&qspace, y.GetData(), vdim);
-      for (int i=0; i<vdim; i++)
-      {
-         gf.SetData(x_block.GetBlock(i).GetData());
-         qf.ProjectGridFunction(gf);
-         SetComponent(qf, i, y_qf);
-      }
-   }
-
-   /**
-    * @brief Solves the adjoint system.
-    * @details Since the Helmholtz operator is self-adjoint, this operation is
-    * identical to the forward `Mult` operation.
-    *
-    * @param[in] x Input vector (right-hand side of the adjoint system).
-    * @param[out] y Output vector (solution of the adjoint system).
-    */
-   void AdjointMult(const Vector &dJdy, Vector &dJdx) const override
-   {
-      MFEM_VERIFY(dJdy.Size() == this->Height(),
-                  "Input vector size does not match operator height.");
-      dJdx.SetSize(this->Width());
-      BlockVector dJdx_block(dJdx.GetData(), gf_toffsets);
-      QuadratureFunction dJdy_qf(&qspace, dJdy.GetData(), vdim);
-      for (int i=0; i<vdim; i++)
-      {
-         ExtractComponent(dJdy_qf, i, qf);
-         lf.Assemble();
-         l2_inv_bf.Mult(lf, dJdx_block.GetBlock(i));
-      }
-   }
-};
 
 // @brief SIMP: E = E0 + sum_{i=1}^n E_i * eta_i^p
 class SIMPFunction : public ADVectorFunction
@@ -331,6 +245,39 @@ public:
             result[i] = (1.0 - pow(t,p)) * E(i, idx) + pow(t,p) * result[i];
             w = l + w;
          }
+      }
+   });
+};
+
+class SIMPRunningWeightedConvex : public ADVectorFunction
+{
+private:
+   real_t p;
+   const DenseMatrix &E;
+public:
+   /* @brief SIMP material interpolation function
+    * Each column of E corresponds to a material property.
+   *
+   *  @param p The SIMP exponent
+   *  @param E Material Properties, size (num_properties, num_materials)
+   */
+   SIMPRunningWeightedConvex(const real_t p, const DenseMatrix &E)
+      : ADVectorFunction(E.Height(), E.Width()), p(p), E(E)
+   { }
+   void SetSIMPExponent(const real_t new_p) { p = new_p; }
+   AD_VEC_IMPL(T, V, M, x, result,
+   {
+      T sum_lam = x(0);
+      T t;
+      Vector curr_E(E.GetData(), E.Height());
+      result = curr_E;
+      for (int i=1; i<width; i++)
+      {
+         sum_lam += x[i];
+         t = pow(x[i] / sum_lam, p);
+         result *= (1.0 - t);
+         curr_E.SetData(curr_E.GetData() + E.Height());
+         result.Add(t, curr_E);
       }
    });
 };

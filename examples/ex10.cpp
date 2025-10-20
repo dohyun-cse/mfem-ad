@@ -1,4 +1,4 @@
-/// Example 4: AD Eikonal equation with PG
+/// Example 5: AD Gradeint Obstacle Problem with PG
 #include "mfem.hpp"
 #include "logger.hpp"
 #include "ad_intg.hpp"
@@ -9,12 +9,12 @@ using namespace std;
 using namespace mfem;
 
 
-struct EikonalEnergy : public ADFunction
+struct ObstacleEnergy : public ADFunction
 {
-   EikonalEnergy() : ADFunction(1) {}
+   ObstacleEnergy(int dim) : ADFunction(dim) {}
    AD_IMPL(T, V, M, x,
    {
-      return x[0];
+      return x*x*0.5;
    });
 };
 
@@ -27,12 +27,13 @@ int main(int argc, char *argv[])
    MPI_Comm comm = MPI_COMM_WORLD;
    // file name to be saved
    std::stringstream filename;
-   filename << "ad-eikonal-";
+   filename << "ad-obstacle-";
    int rule_type = PGStepSizeRule::RuleType::CONSTANT;
-   real_t max_alpha = 1e04;
+   real_t max_alpha = 1e06;
    real_t alpha0 = 1.0;
    real_t ratio = 1.0;
    real_t ratio2 = 1.0;
+   bool use_iterative = false;
 
    int order = 2;
    int ref_levels = 3;
@@ -59,8 +60,12 @@ int main(int argc, char *argv[])
    args.AddOption(&paraview, "-pv", "--paraview",
                   "-no-pv", "--no-paraview",
                   "Enable Paraview Export. Default is false");
+   args.AddOption(&use_iterative, "-gmres", "--preconditioned-gmres",
+                  "-mumps", "--MUMPS",
+                  "Use preconditioned GMRES or MUMPS as linear solver. Default is MUMPS");
    args.ParseCheck();
    if (myid != 0) { out.Disable(); }
+   MFEMInitializePetsc(NULL,NULL,"../src/pgpetsc",NULL);
 
    PGStepSizeRule alpha_rule(rule_type, alpha0, max_alpha, ratio, ratio2);
 
@@ -80,12 +85,16 @@ int main(int argc, char *argv[])
    Array<int> is_bdr_ess2(numBdrAttr);
    is_bdr_ess2 = 0;
    Array<Array<int>*> is_bdr_ess{&is_bdr_ess1, &is_bdr_ess2};
-   EikonalEnergy obj_energy;
+   FunctionCoefficient load_cf([](const Vector &x)
+   {
+      return 2*M_PI * M_PI * std::sin(M_PI * x(0)) * std::sin(M_PI * x(1));
+   });
+   ObstacleEnergy obj_energy(dim);
 
    H1_FECollection primal_fec(order, dim);
-   RT_FECollection latent_fec(order, dim);
+   H1_FECollection latent_fec(order-1, dim);
    ParFiniteElementSpace primal_fes(&mesh, &primal_fec);
-   ParFiniteElementSpace latent_fes(&mesh, &latent_fec);
+   ParFiniteElementSpace latent_fes(&mesh, &latent_fec, dim);
    QuadratureSpace visspace(&mesh, order+3);
    const IntegrationRule &ir = IntRules.Get(Geometry::Type::SQUARE, 3*order + 3);
 
@@ -106,12 +115,9 @@ int main(int argc, char *argv[])
    latent = 0.0; latent.ParallelAssemble(x_and_latent.GetBlock(1));
    latent_k = 0.0; latent_k.SetTrueVector();
 
-   FunctionCoefficient obstacle_cf([](const Vector &x)
-   {
-      return std::max(-x[0], -0.5);
-
-   });
-   HellingerEntropy entropy(1, 1.0);
+   FunctionCoefficient bound([](const Vector &x)
+   { return 0.1 + 0.2*x[0] + 0.4*x[1]; });
+   HellingerEntropy entropy(dim, &bound);
 
    DifferentiableCoefficient entropy_cf(entropy);
    entropy_cf.AddInput(&latent);
@@ -122,36 +128,54 @@ int main(int argc, char *argv[])
 
    ParGridFunction lambda(latent), lambda_prev(latent);
    lambda = 0.0;
-   GridFunctionCoefficient lambda_prev_cf(&lambda_prev);
+   VectorGridFunctionCoefficient lambda_prev_cf(&lambda_prev);
 
    Array<ParFiniteElementSpace*> fespaces{&primal_fes, &latent_fes};
    ParBlockNonlinearForm bnlf(fespaces);
-   constexpr ADEval u_mode = ADEval::VALUE;
-   constexpr ADEval latent_mode = ADEval::VECFE | ADEval::DIV;
+   constexpr ADEval u_mode = ADEval::GRAD;
+   constexpr ADEval latent_mode = ADEval::VALUE | ADEval::VECTOR;
    bnlf.AddDomainIntegrator(
       new ADBlockNonlinearFormIntegrator<u_mode, latent_mode>(
          pg_functional, &ir)
    );
 
    BlockVector rhs(offsets);
-   rhs = 0.0;
+   ParLinearForm b(&primal_fes);
+   b.AddDomainIntegrator(new DomainLFIntegrator(load_cf));
+   b.Assemble();
+   b.ParallelAssemble(rhs.GetBlock(0));
+   rhs.GetBlock(0).SetSubVector(ess_tdof_list, 0.0);
+   rhs.GetBlock(1) = 0.0;
 
    Array<Vector*> rhs_list{&rhs.GetBlock(0), &rhs.GetBlock(1)};
    bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
-   ParMonolithicBlockNonlinearFormWrapper bnlf_wrapper(bnlf);
 
-#ifndef MFEM_USE_MUMPS
-#error "MUMPS is required to run this example."
-#endif
-   MUMPSSolver lin_solver(comm);
+   // MUMPSMonoSolver lin_solver(comm);
+   std::unique_ptr<Solver> lin_solver;
+   std::unique_ptr<NewtonLinearSolverMonitor> lin_monitor;
+   std::unique_ptr<Operator> petsc_bnlf;
+   if (use_iterative)
+   {
+      auto petsc_solver = std::make_unique<PetscLinearSolver>(comm);
+      petsc_solver->SetMaxIter(1e04);
+      lin_monitor = std::make_unique<NewtonLinearSolverMonitor>(*petsc_solver);
+      lin_monitor->SetPrefix(2);
+      lin_solver = std::move(petsc_solver);
+      petsc_bnlf = std::make_unique<PetscOperatorWrapper>(comm, bnlf);
+   }
+   else
+   {
+      lin_solver = std::make_unique<MUMPSMonoSolver>(comm);
+   }
    NewtonSolver solver(comm);
-   solver.SetSolver(lin_solver);
-   solver.SetOperator(bnlf_wrapper);
+   if (lin_monitor) { solver.SetMonitor(*lin_monitor); }
+   solver.SetSolver(*lin_solver);
+   solver.SetOperator(petsc_bnlf ? *petsc_bnlf : bnlf);
    IterativeSolver::PrintLevel print_level;
    solver.SetPrintLevel(print_level);
-   solver.SetAbsTol(0.0);
-   solver.SetRelTol(1e-07);
-   solver.SetMaxIter(20);
+   solver.SetAbsTol(1e-07);
+   solver.SetRelTol(0.0);
+   solver.SetMaxIter(50);
    solver.iterative_mode = true;
 
    GLVis glvis("localhost", 19916, 400, 350, 3);

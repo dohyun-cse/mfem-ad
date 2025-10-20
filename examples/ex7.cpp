@@ -1,4 +1,4 @@
-/// Example 5: AD Gradeint Obstacle Problem with PG
+/// Example 5: AD cantilever MTO problem with Mirror Descent (Simplex Mirror descent with Projected Latent variable, SiMPL)
 #include "mfem.hpp"
 #include "logger.hpp"
 // #include "ad_intg.hpp"
@@ -66,15 +66,19 @@ int main(int argc, char *argv[])
    //                "-mumps", "--MUMPS",
    //                "Use preconditioned GMRES or MUMPS as linear solver. Default is MUMPS");
    args.ParseCheck();
-   if (myid != 0) { out.Disable(); }
+   if (myid != 0)
+   {
+      out.Disable();
+   }
    MFEM_VERIFY(order >= 1, "Order must be at least 1.");
 
    const int numMaterials = 5;
    DenseMatrix E(1, numMaterials);
    Vector rho{0.0, 1.0, 1.3, 1.5, 1.7};
-   Vector mass_bound(numMaterials); // 0: total, i>0: individual
+   Vector mass_bound(1); // 0: total, i>0: individual
    mass_bound = mfem::infinity();
-   rho(0) = 0.0; E(0,0) = 1e-08;
+   rho(0) = 0.0;
+   E(0,0) = 1e-08;
    mass_bound(0) = 1.5;
    for (int i=1; i<numMaterials; i++)
    {
@@ -85,12 +89,12 @@ int main(int argc, char *argv[])
    std::vector<Vector> rho_list;
    rho_list.push_back(Vector(numMaterials));
    rho_list.back() = rho;
-   for (int i = 1; i < numMaterials; i++)
-   {
-      rho_list.push_back(Vector(numMaterials));
-      rho_list.back() = 0.0;
-      rho_list.back()[i] = rho[i];
-   }
+   // for (int i = 1; i < numMaterials; i++)
+   // {
+   //    rho_list.push_back(Vector(numMaterials));
+   //    rho_list.back() = 0.0;
+   //    rho_list.back()[i] = rho[i];
+   // }
    const real_t nu = 0.3;
 
    MFEM_VERIFY(rho.Size() == numMaterials,
@@ -180,7 +184,8 @@ int main(int argc, char *argv[])
    std::unique_ptr<ADVectorFunction> simp_func;
    if (use_blending)
    {
-      simp_func = std::make_unique<SIMPBlendFunction>(3.0, E);
+      // simp_func = std::make_unique<SIMPBlendFunction>(3.0, E);
+      simp_func = std::make_unique<SIMPRunningWeightedConvex>(3.0, E);
    }
    else
    {
@@ -204,7 +209,7 @@ int main(int argc, char *argv[])
    load.ParallelAssemble(load_dual_tvec);
    BregmanDykstra projector(qspace, entropy);
    std::vector<std::unique_ptr<ADFunction>> constraints;
-   for (int i=0; i<numMaterials; i++)
+   for (int i=0; i<mass_bound.Size(); i++)
    {
       if (IsFinite(mass_bound[i]))
       {
@@ -236,11 +241,24 @@ int main(int argc, char *argv[])
    obj = f();
    std::unique_ptr<GLVis> glvis;
    std::unique_ptr<ParaViewDataCollection> paraview_dc;
-   if (visualization) { glvis = std::make_unique<GLVis>("localhost", 19916, 400, 350, 4); }
-   if (paraview) { paraview_dc = std::make_unique<ParaViewDataCollection>("ParaView/Topopt", &mesh); }
+   if (visualization)
+   {
+      glvis = std::make_unique<GLVis>("localhost", 19916, 400, 350, 4);
+   }
+   if (paraview)
+   {
+      paraview_dc = std::make_unique<ParaViewDataCollection>("ParaView/Topopt",
+                                                             &mesh);
+   }
    density_cf.Project(*indicator_list[0]);
-   if (glvis) { glvis->Append(*indicator_list[0], "density", "Rjmm*********"); }
-   if (paraview_dc) { paraview_dc->RegisterQField("density", indicator_list[0].get()); }
+   if (glvis)
+   {
+      glvis->Append(*indicator_list[0], "density", "Rjmm*********");
+   }
+   if (paraview_dc)
+   {
+      paraview_dc->RegisterQField("density", indicator_list[0].get());
+   }
    if (paraview_dc)
    {
       string name;
@@ -255,7 +273,9 @@ int main(int argc, char *argv[])
       paraview_dc->RegisterQField("material", &material);
    }
    if (glvis)
-   { glvis->Append(material, "material", "Rjmm*********"); }
+   {
+      glvis->Append(material, "material", "Rjmm*********");
+   }
    if (paraview_dc)
    {
       paraview_dc->SetCycle(0);
@@ -264,7 +284,7 @@ int main(int argc, char *argv[])
    }
 
 
-   real_t step_size = 1e-02;
+   real_t step_size = 1e-03;
    int it=0;
    int reeval=-1;
    int dykstra_it=projector.GetNumIterations();
@@ -300,16 +320,25 @@ int main(int argc, char *argv[])
          subtract(indicator, indicator_k, diff_indicator);
          diffval = dot(comm, diff_indicator, gradient);
          real_t suff_decr = obj_k + 1e-03*diffval;
-         if (obj <= suff_decr && diffval < 0.0) { break; }
+         if (obj <= suff_decr && diffval < 0.0)
+         {
+            break;
+         }
          step_size *= 0.5;
       }
       density_cf.Project(*indicator_list[0]);
       for (int i=0; i<numMaterials; i++)
       {
-         if (i > 0) { ExtractComponent(indicator, i, *indicator_list[i]); }
+         if (i > 0)
+         {
+            ExtractComponent(indicator, i, *indicator_list[i]);
+         }
          ExtractComponent(gradient, i, *gradient_list[i]);
       }
-      if (glvis) { glvis->Update(); }
+      if (glvis)
+      {
+         glvis->Update();
+      }
       if (paraview_dc)
       {
          paraview_dc->SetCycle(it+1);

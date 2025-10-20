@@ -2,9 +2,7 @@
 
 #include "mfem.hpp"
 #include "ad_native.hpp"
-// #include "ad_intg.hpp"
-// #include "tools.hpp"
-// #include "pg.hpp"
+#include "tools.hpp"
 
 namespace mfem
 {
@@ -415,6 +413,106 @@ protected:
       dJdx.SetSize(Width());
       QuadratureFunction dJdx_qf(&qspace, dJdx.GetData(), input_vdim);
       dJdx_cf.Project(dJdx_qf);
+   }
+};
+
+// forward: Interpolate L2 to Quadrature space
+// backward: Project Quadrature to L2 space
+class L2toQF : public ForwardBackwardOperator
+{
+private:
+   const int vdim;
+   QuadratureSpace &qspace;
+   FiniteElementSpace &fespace;
+   mutable GridFunction gf;
+   mutable QuadratureFunction qf;
+   Array<Geometry::Type> geoms;
+   std::vector<std::vector<DenseMatrix>> mass_mats;
+public:
+   L2toQF(QuadratureSpace &qs,
+          FiniteElementSpace &fes)
+      : ForwardBackwardOperator(qs.GetSize()*fes.GetVDim(), fes.GetTrueVSize())
+      , vdim(fes.GetVDim())
+      , qspace(qs)
+      , fespace(fes)
+      , gf(&fespace, nullptr)
+      , qf(&qspace, nullptr, vdim)
+   {
+      MFEM_VERIFY(dynamic_cast<const L2_FECollection*>(fes.FEColl()) != nullptr,
+                  "L2Projector base space must be L2.");
+      if (qspace.GetOrder() < fespace.GetMaxElementOrder())
+      {
+         MFEM_WARNING("L2toQF: Quadrature space order is less than FE space order. "
+                      "This may lead to aliasing errors.");
+      }
+   }
+   std::string Name() const override { return std::string("HelmholtzFilter"); }
+
+   /**
+    * @brief Interpolate from L2 space to quadrature space.
+    *
+    * @param[in] x Input vector in L2 space (ordering = NODES, x_1, .., x_N, y_1, ...)
+    * @param[out] y Output vector in quadrature space (ordering = VDIM, x_1, y_1, ...,)
+    */
+   void Mult(const Vector &x, Vector &y) const override
+   {
+      MFEM_VERIFY(x.Size() == this->Width(),
+                  "Input vector size does not match operator width.");
+      MFEM_ASSERT(x.CheckFinite() == 0,
+                  "L2toQF::Mult: x is not finite.");
+      y.SetSize(this->Height());
+      gf.SetData(x.GetData());
+      qf.SetData(y.GetData());
+      qf.ProjectGridFunction(gf);
+   }
+
+   /**
+    * @brief Project from quadrature space back to L2 space.
+    * @details Since the Helmholtz operator is self-adjoint, this operation is
+    * identical to the forward `Mult` operation.
+    *
+    * @param[in] x Input vector (right-hand side of the adjoint system).
+    * @param[out] y Output vector (solution of the adjoint system).
+    */
+   void AdjointMult(const Vector &dJdy, Vector &dJdx) const override
+   {
+      MFEM_VERIFY(dJdy.Size() == this->Height(),
+                  "Input vector size does not match operator height.");
+      dJdx.SetSize(this->Width());
+
+      qf.SetData(dJdy.GetData());
+      gf.SetData(dJdx.GetData());
+
+      InverseIntegrator l2_inv(new MassIntegrator());
+      DomainVectorQLFIntegrator int_qf(qf);
+
+      Array<int> dofs;
+      Vector local_int_dJdy_vec;
+      DenseMatrix local_dJdx;
+      DenseMatrix local_int_dJdy;
+      Vector local_dJdx_vec;
+      DenseMatrix inv_mass;
+
+      using mfem::Mult;
+      for (int i=0; i<qspace.GetNE(); i++)
+      {
+         fespace.GetElementVDofs(i, dofs);
+         auto *Tr = qspace.GetTransformation(i);
+         auto &ir = qspace.GetIntRule(i);
+         auto *el = fespace.GetFE(i);
+
+         int_qf.AssembleRHSElementVect(*el, *Tr, local_int_dJdy_vec);
+         local_int_dJdy.UseExternalData(local_int_dJdy_vec.GetData(), el->GetDof(),
+                                        vdim);
+
+         l2_inv.AssembleElementMatrix(*el, *Tr, inv_mass);
+
+         local_dJdx.SetSize(el->GetDof(), vdim);
+         local_dJdx_vec.SetDataAndSize(local_dJdx.GetData(), el->GetDof()*vdim);
+
+         Mult(inv_mass, local_int_dJdy, local_dJdx);
+         gf.SetSubVector(dofs, local_dJdx_vec);
+      }
    }
 };
 

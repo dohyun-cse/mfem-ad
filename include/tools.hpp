@@ -383,6 +383,40 @@ public:
    }
 };
 
+class DomainVectorQLFIntegrator : public LinearFormIntegrator
+{
+private:
+   QuadratureSpace &qs;
+   QuadratureFunction &f;
+   const Vector &weights;
+   Vector fvals;
+   Vector shapevals;
+public:
+   DomainVectorQLFIntegrator(QuadratureFunction &qf)
+      : qs(static_cast<QuadratureSpace&>(*qf.GetSpace()))
+      , f(qf), weights(qs.GetWeights())
+   { }
+   void AssembleRHSElementVect(const FiniteElement &el,
+                               ElementTransformation &Tr,
+                               Vector &elvect) override
+   {
+      const IntegrationRule &ir = qs.GetIntRule(Tr.ElementNo);
+      elvect.SetSize(el.GetDof()*f.GetVDim());
+      elvect = 0.0;
+      DenseMatrix elmat(elvect.GetData(), el.GetDof(), f.GetVDim());
+      shapevals.SetSize(el.GetDof());
+      int offset = qs.Offset(Tr.ElementNo);
+      Vector fvals(f.GetVDim());
+      for (int i=0; i<ir.GetNPoints(); i++)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(i);
+         el.CalcShape(ip, shapevals);
+         f.GetValues(Tr.ElementNo, i, fvals);
+         AddMult_a_VWt(weights(offset + i), shapevals, fvals, elmat);
+      }
+   }
+};
+
 inline real_t Integrate(QuadratureFunction &qf)
 {
    return qf.Integrate();
@@ -435,6 +469,53 @@ inline real_t dot(MPI_Comm comm, QuadratureFunction &a, QuadratureFunction &b)
                  comm);
    return result;
 }
+inline real_t dot(MPI_Comm comm, GridFunction &a, QuadratureFunction &b)
+{
+   MFEM_VERIFY(a.FESpace()->GetVDim() == b.GetVDim(),
+               "Vector dimension mismatch.");
+   QuadratureSpaceBase *qs = b.GetSpace();
+   Vector a_vals, b_vals;
+   real_t result = 0.0;
+   const Vector &weights = qs->GetWeights();
+   int ctr=0;
+   for (int i=0; i<qs->GetNE(); i++)
+   {
+      const IntegrationRule &ir = qs->GetIntRule(i);
+      for (int j=0; j<ir.GetNPoints(); j++)
+      {
+         a.GetVectorValue(i, ir[j], a_vals);
+         b.GetValues(i, j, b_vals);
+         result += weights[ctr++] * (a_vals * b_vals);
+      }
+   }
+   MPI_Allreduce(MPI_IN_PLACE, &result, 1, MPITypeMap<real_t>::mpi_type, MPI_SUM,
+                 comm);
+   return result;
+}
+inline real_t dot(MPI_Comm comm, GridFunction &a, VectorCoefficient &b,
+                  QuadratureSpace &qs)
+{
+   MFEM_VERIFY(a.FESpace()->GetVDim() == b.GetVDim(),
+               "Vector dimension mismatch.");
+   Vector a_vals, b_vals;
+   real_t result = 0.0;
+   const Vector &weights = qs.GetWeights();
+   int ctr=0;
+   for (int i=0; i<qs.GetNE(); i++)
+   {
+      const IntegrationRule &ir = qs.GetIntRule(i);
+      auto *Tr = qs.GetMesh()->GetElementTransformation(i);
+      for (int j=0; j<ir.GetNPoints(); j++)
+      {
+         a.GetVectorValue(i, ir[j], a_vals);
+         b.Eval(b_vals, *Tr, ir[j]);;
+         result += weights[ctr++] * (a_vals * b_vals);
+      }
+   }
+   MPI_Allreduce(MPI_IN_PLACE, &result, 1, MPITypeMap<real_t>::mpi_type, MPI_SUM,
+                 comm);
+   return result;
+}
 inline real_t ParNormL1(MPI_Comm comm, QuadratureFunction &a)
 {
    QuadratureSpaceBase *qs = a.GetSpace();
@@ -464,7 +545,7 @@ inline real_t dot(const QuadratureFunction &a, VectorCoefficient &b)
 }
 
 /// @brief Get the essential true dofs from component-wise boundary conditions
-inline void GetEssentialTrueDofs(FiniteElementSpace &fes,
+inline void GetEssentialTrueDofs(const FiniteElementSpace &fes,
                                  const Array2D<int> &ess_bdr,
                                  Array<int> &ess_tdofs)
 {
@@ -475,14 +556,59 @@ inline void GetEssentialTrueDofs(FiniteElementSpace &fes,
    ess_tdofs.SetSize(0);
    for (int i=0; i<ess_bdr.NumRows(); i++)
    {
+      curr_tdofs.SetSize(0);
       ess_bdr.GetRow(i, bdr_marker);
       fes.GetEssentialTrueDofs(bdr_marker, curr_tdofs, i);
       ess_tdofs.Append(curr_tdofs);
    }
 }
 
-inline void MarkBoundary(Mesh &mesh, int attr,
-                         std::function<bool(const Vector&)>mask)
+/// @brief Set element attribute based on a mask function.
+/// The mask function will be evaluated at the center of each (local) element
+/// using the lowest order integration point.
+/// If the mask returns true, the element attribute will be set to `attr`.
+///
+/// @param mesh The target mesh
+/// @param attr The attribute to set
+/// @param mask A function that takes a Vector (the coordinates) and returns
+///            a boolean value.
+/// @param update_attr_array If true, update the attribute arrays in the mesh
+///                           after setting the attributes. Default is true.
+inline void SetElementAttribute(Mesh &mesh, int attr,
+                                std::function<bool(const Vector&)>mask,
+                                bool update_attr_array=true)
+{
+   Vector x(mesh.SpaceDimension());
+   for (int i=0; i<mesh.GetNE(); i++)
+   {
+      ElementTransformation &Tr = *mesh.GetElementTransformation(i);
+      const IntegrationRule &ir = IntRules.Get(Tr.GetGeometryType(), 0);
+      Tr.Transform(ir[0], x);
+      if (mask(x))
+      {
+         mesh.SetBdrAttribute(i, attr);
+      }
+   }
+   if (update_attr_array)
+   {
+      mesh.SetAttributes(true, false);
+   }
+}
+
+/// @brief Set boundary attribute based on a mask function.
+/// The mask function will be evaluated at the center of each (local) boundary face,
+/// using the lowest order integration point.
+/// If the mask returns true, the boundary attribute will be set to `attr`.
+///
+/// @param mesh The target mesh
+/// @param attr The attribute to set
+/// @param mask A function that takes a Vector (the coordinates) and returns
+///            a boolean value.
+/// @param update_attr_array If true, update the attribute arrays in the mesh
+///                           after setting the attributes. Default is true.
+inline void SetBoundaryAttribute(Mesh &mesh, int attr,
+                                 std::function<bool(const Vector&)>mask,
+                                 bool update_attr_array=true)
 {
    Vector x(mesh.SpaceDimension());
    for (int i=0; i<mesh.GetNBE(); i++)
@@ -495,6 +621,9 @@ inline void MarkBoundary(Mesh &mesh, int attr,
          mesh.SetBdrAttribute(i, attr);
       }
    }
-   mesh.SetAttributes(false, true);
+   if (update_attr_array)
+   {
+      mesh.SetAttributes(false, true);
+   }
 }
 }

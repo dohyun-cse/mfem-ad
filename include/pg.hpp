@@ -2,6 +2,7 @@
 #include "mfem.hpp"
 #include "ad_native.hpp"
 #include "tools.hpp"
+#include "diffobj.hpp"
 
 namespace mfem
 {
@@ -613,6 +614,7 @@ public:
       , gradient(qspace, vdim)
    {
       entropy_cf.AddInput(&latent);
+      constraints.clear();
 #ifdef MFEM_USE_MPI
       ParMesh *mesh = dynamic_cast<ParMesh*>(qspace.GetMesh());
       if (mesh) { SetComm(mesh->GetComm()); }
@@ -644,6 +646,7 @@ public:
    {
       MFEM_VERIFY(latent0.Size() == width,
                   "Input vector size does not match operator width.");
+      if (constraints.size() == 0) { opt_latent = latent0; return; }
       opt_latent.SetSize(height);
       const QuadratureFunction x_qf(&qspace, latent0.GetData(), vdim);
       latent.SetData(opt_latent.GetData());
@@ -672,6 +675,239 @@ public:
          {
             constraint_val[j] = qspace.Integrate(*constraint_cfs[j]) - targets[j];
             qi_norm[j] = Dot(*qi[j], *qi[j]);
+         }
+         if (constraint_val.Max() < abs_tol)
+         {
+            break;
+         }
+      }
+      if (print_level > 0)
+      {
+         out << "BregmanDykstra: Completed in " << final_iter+1
+             << " iterations with " << num_const_eval
+             << " constraint evaluations. Max constraint violation = "
+             << constraint_val.Max() << std::endl;
+      }
+   }
+   int NumConstraintEvals() const { return num_const_eval; }
+   // Set the search interval [new_lower, new_upper]
+   // If the bounds do not bracket the root, they will be shifted.
+   void SetBracket(real_t new_lower, real_t new_upper)
+   {
+      MFEM_VERIFY(new_lower < new_upper,
+                  "BregmanDykstra: lower bound must be less than upper bound");
+      lower = new_lower;
+      upper = new_upper;
+   }
+   // Set the search interval [-new_bound, new_bound]
+   // If the bounds do not bracket the root, they will be shifted.
+   void SetBracket(real_t new_bound)
+   {
+      MFEM_VERIFY(new_bound > 0,
+                  "BregmanDykstra: lower bound must be less than upper bound");
+      lower = -new_bound;
+      upper = new_bound;
+   }
+
+private:
+   using IterativeSolver::Dot;
+   mutable int num_const_eval=0;
+
+   void TangentProjection(const int i, const real_t target) const
+   {
+      real_t c, fc;
+      int n, side = 0;
+      latent_freeze = latent;
+      auto f = [&](real_t x)
+      {
+         num_const_eval++;
+         add(latent_freeze, x, gradient, latent);
+         return qspace.Integrate(*constraint_cfs[i]) - target;
+      };
+      real_t f0 = f(0.0);
+      if (f0 < abs_tol) { return; }
+      real_t a = lower, b = upper;
+      real_t fa = f(a);
+      real_t fb = f(b);
+      if (print_level > 1)
+      {
+         out << "  f(0) = " << f0
+             << " f(" << a << ") = " << fa
+             << " f(" << b << ") = " << fb
+             << std::endl;
+      }
+      /// Shift bounds if necessary
+      if (fa * fb > 0)
+      {
+         if (print_level > 1)
+         {
+            out << "  Initial bounds do not bracket root, shifting..." << std::endl;
+         }
+         real_t diff = b - a;
+         if (fa > 0) // both positive
+         {
+            while (fa > 0)
+            {
+               b = a; fb = fa;
+               a -= diff;
+               fa = f(a);
+            }
+         }
+         else // both negative
+         {
+            while (fb < 0)
+            {
+               a = b; fa = fb;
+               b += diff;
+               fb = f(b);
+            }
+         }
+         if (print_level > 1)
+         {
+            out << "  f(0) = " << f0 << " f(a) = " << fa << " f(b) = " << fb << std::endl;
+         }
+      }
+
+
+      for (n = 0; n < max_sub_iter; n++)
+      {
+         if (fabs(b - a) < rel_tol * fabs(b + a)) { break; }
+         c = (fa * b - fb * a) / (fa - fb);
+
+         fc = f(c);
+
+         if (fabs(fc) < abs_tol) { break; }
+
+         if (fc * fb > 0)
+         {
+            /* fc and fb have same sign, copy c to b */
+            b = c; fb = fc;
+            if (side == -1)
+            {
+               fa /= 2;
+            }
+            side = -1;
+         }
+         else if (fa * fc > 0)
+         {
+            /* fc and fa have same sign, copy c to a */
+            a = c; fa = fc;
+            if (side == +1)
+            {
+               fb /= 2;
+            }
+            side = +1;
+         }
+         else
+         {
+            break;
+         }
+      }
+   }
+};
+class BregmanDykstraDG : public IterativeSolver
+{
+private:
+   QuadratureSpace &qspace;
+   FiniteElementSpace &fes;
+   ADEntropy &entropy;
+   const int vdim;
+   mutable DifferentiableCoefficient entropy_cf;
+   VectorCoefficient &primal_cf;
+   mutable GridFunction latent;
+   mutable GridFunction latent_k;
+   mutable GridFunction gradient;
+   mutable QuadratureFunction gradient_qf;
+   mutable GridFunction latent_freeze;
+   L2toQF &l2toqf;
+   std::vector<ADFunction*> constraints;
+   mutable std::vector<std::unique_ptr<DifferentiableCoefficient>> constraint_cfs;
+   std::vector<real_t> targets;
+   mutable std::vector<std::unique_ptr<GridFunction>> qi;
+   int max_sub_iter;
+   real_t lower=-1e04, upper=1e04;
+public:
+   BregmanDykstraDG(QuadratureSpace &qspace_, FiniteElementSpace &fes_,
+                    L2toQF &map,
+                    ADEntropy &entropy_)
+      : qspace(qspace_)
+      , fes(fes_)
+      , entropy(entropy_)
+      , vdim(entropy.width)
+      , entropy_cf(entropy), primal_cf(entropy_cf.Gradient())
+      , latent(&fes), latent_k(&fes)
+      , latent_freeze(&fes)
+      , gradient(&fes)
+      , gradient_qf(qspace_, vdim)
+      , l2toqf(map)
+   {
+      MFEM_VERIFY(fes.GetVDim() == vdim,
+                  "BregmanDykstraDG: fes vdim does not match entropy width");
+      MFEM_VERIFY(fes.GetOrdering() == Ordering::byNODES,
+                  "BregmanDykstraDG: fes must have byNODES ordering");
+      entropy_cf.AddInput(&latent);
+#ifdef MFEM_USE_MPI
+      ParMesh *mesh = dynamic_cast<ParMesh*>(qspace.GetMesh());
+      if (mesh) { SetComm(mesh->GetComm()); }
+#endif
+      rel_tol = 1e-08;
+      abs_tol = 1e-08;
+      max_iter = 1000;
+      max_sub_iter = 1000;
+      width = height = fes.GetTrueVSize();
+   }
+   void SetMaxSubIter(int n) { max_sub_iter = n; }
+
+   void AddConstraint(ADFunction &constraint, real_t target=0.0)
+   {
+      MFEM_VERIFY(constraint.width == vdim,
+                  "Constraint input dimension does not match.");
+      constraints.push_back(&constraint);
+      constraint_cfs.push_back(
+         std::make_unique<DifferentiableCoefficient>(constraint));
+      constraint_cfs.back()->AddInput(&primal_cf);
+      targets.push_back(target);
+
+      qi.push_back(std::make_unique<GridFunction>(&fes));
+   }
+
+   /// @brief Project latent0 onto the intersection of the convex sets defined by the constraints
+   /// latent0 and opt_latent can be the same vector
+   void Mult(const Vector &latent0, Vector &opt_latent) const override
+   {
+      MFEM_VERIFY(latent0.Size() == width,
+                  "Input vector size does not match operator width.");
+      Vector zero_vec(vdim);
+      zero_vec = 0.0;
+      VectorConstantCoefficient zero_cf(zero_vec);
+      opt_latent.SetSize(height);
+      latent.SetData(opt_latent.GetData());
+      latent = latent0;
+      Vector constraint_val(constraints.size());
+      Vector qi_norm(constraints.size());
+      for (int j=0; j<constraints.size(); j++)
+      {
+         constraint_val[j] = qspace.Integrate(*constraint_cfs[j]) - targets[j];
+         *qi[j] = 0.0;
+      }
+      num_const_eval = 0;
+      for (final_iter=0; final_iter<max_iter; final_iter++)
+      {
+         for (int j=0; j<constraints.size(); j++)
+         {
+            latent_k = latent;
+            real_t cval = qspace.Integrate(*constraint_cfs[j]) - targets[j];
+            constraint_cfs[j]->Gradient().Project(gradient_qf);
+            l2toqf.AdjointMult(gradient_qf, gradient);
+            real_t target = dot(GetComm(), gradient, primal_cf, qspace) - cval;
+            TangentProjection(j, target);
+            latent_k -= latent;
+            *qi[j] += latent_k;
+         }
+         for (int j=0; j<constraints.size(); j++)
+         {
+            constraint_val[j] = qspace.Integrate(*constraint_cfs[j]) - targets[j];
+            qi_norm[j] = qi[j]->ComputeL2Error(zero_cf);
          }
          if (constraint_val.Max() < abs_tol)
          {
