@@ -17,6 +17,28 @@ public:
       return map_func(gf->GetValue(T.ElementNo, T.GetIntPoint()));
    }
 };
+class MappedVectorGridFunctionCoefficient : public VectorCoefficient
+{
+private:
+   GridFunction *gf;
+   Vector gf_val;
+   std::function<void(const Vector&, Vector&)> map_func;
+public:
+   MappedVectorGridFunctionCoefficient(const int dim,
+                                       GridFunction *gf_,
+                                       std::function<void(const Vector&, Vector&)> map_func_)
+      : VectorCoefficient(dim), gf(gf_), map_func(map_func_)
+   {
+      MFEM_VERIFY(gf_ != nullptr, "MappedVectorGridFunctionCoefficient: gf_ is null");
+      gf_val.SetSize(gf_->VectorDim());
+   }
+   void Eval(Vector &V, ElementTransformation &T,
+             const IntegrationPoint &ip) override
+   {
+      gf->GetVectorValue(T.ElementNo, T.GetIntPoint(), gf_val);
+      map_func(gf_val, V);
+   }
+};
 class VectorGradientGridFunctionCoefficient : public MatrixCoefficient
 {
 private:

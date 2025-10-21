@@ -6,6 +6,45 @@
 
 namespace mfem
 {
+
+using mfem::Mult;
+template <typename T>
+void Mult(const DenseMatrix &A, const TAutoDiffVector<T> &x,
+          TAutoDiffVector<T> &y)
+{
+   y.SetSize(A.Height());
+   y = T();
+   for (int j = 0; j < A.Width(); j++)
+   {
+      const T xj = x[j];
+      for (int i = 0; i < A.Height(); i++)
+      {
+         y[i] += A(i,j) * xj;
+      }
+   }
+}
+
+
+template <typename T>
+void MultTranspose(const DenseMatrix &A, const TAutoDiffVector<T> &x,
+                   TAutoDiffVector<T> &y)
+{
+   y.SetSize(A.Width());
+   for (int j = 0; j < A.Width(); j++)
+   {
+      y[j] = T();
+      for (int i = 0; i < A.Height(); i++)
+      {
+         y[j] += A(i, j) * x[i];
+      }
+   }
+}
+
+
+void MultTranspose(const DenseMatrix &A, const Vector &x, Vector &y)
+{ A.MultTranspose(x, y); }
+
+
 // PGStepSizeRule defines the step size rule for the Proximal Galerkin (PG) method.
 // See RuleType for the available rules
 struct PGStepSizeRule
@@ -381,6 +420,79 @@ public:
       }
       return scale*(maxval + log(sum_exp));
    });
+};
+
+class PolytopalEntropy : public ADEntropy
+{
+   const int dim;
+   const int num_verts;
+   const DenseMatrix vertex;
+   mutable Vector Vx;
+public:
+   PolytopalEntropy(const int dim_, const int num_verts_,
+                    Evaluator::param_t vertex_)
+      : ADEntropy(dim_, dim_*num_verts_)
+      , dim(dim_)
+      , num_verts(num_verts_)
+      , vertex(evaluator.val.GetBlock(0).GetData(), dim, num_verts)
+      , Vx(num_verts)
+   {
+      evaluator.Add(vertex_);
+   }
+   PolytopalEntropy(const DenseMatrix &vertex_)
+      : PolytopalEntropy(vertex_.Height(), vertex_.Width(), &vertex_)
+   { }
+
+   real_t operator()(const Vector &x) const override
+   {
+      vertex.MultTranspose(x, Vx);
+      real_t maxval = Vx.Max();
+      real_t sum_exp = 0.0;
+      for (auto &v : Vx) { sum_exp += exp(v - maxval); }
+      return maxval + log(sum_exp);
+   }
+
+   void Gradient(const Vector &x, Vector &J,
+                 int start=0, int end=-1) const override
+   {
+      MFEM_ASSERT(start == 0,
+                  "PolytopalEntropy::Gradient: start must be 0");
+      MFEM_ASSERT(end == -1 || end == vertex.Height(),
+                  "PolytopalEntropy::Gradient: end must be -1 or equal to vertex.Height()");
+      vertex.MultTranspose(x, Vx);
+      real_t maxval = Vx.Max();
+      real_t sum_exp = 0.0;
+      for (int i=0; i<vertex.Height(); i++)
+      {
+         Vx[i] = std::exp(Vx[i] - maxval);
+         sum_exp += Vx[i];
+      }
+      Vx /= sum_exp;
+      J.SetSize(vertex.Height());
+      vertex.Mult(Vx, J);
+   }
+   std::unique_ptr<VectorCoefficient> BarycentricCoordinate(
+      ParGridFunction &psi) const
+   {
+      return std::make_unique<MappedVectorGridFunctionCoefficient>
+             (vertex.Width(), &psi, [this](const Vector &x, Vector &lambda)
+      {
+         MFEM_ASSERT(start == 0,
+                     "PolytopalEntropy::Gradient: start must be 0");
+         MFEM_ASSERT(end == -1 || end == vertex.Height(),
+                     "PolytopalEntropy::Gradient: end must be -1 or equal to vertex.Height()");
+         lambda.SetSize(vertex.Width());
+         this->vertex.MultTranspose(x, lambda);
+         real_t maxval = lambda.Max();
+         real_t sum_exp = 0.0;
+         for (int i=0; i<this->vertex.Height(); i++)
+         {
+            lambda[i] = std::exp(lambda[i] - maxval);
+            sum_exp += lambda[i];
+         }
+         lambda /= sum_exp;
+      });
+   }
 };
 
 class PGPreconditioner : public Solver
