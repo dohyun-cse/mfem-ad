@@ -421,6 +421,38 @@ public:
       return scale*(maxval + log(sum_exp));
    });
 };
+//
+// Dual entropy for (negative) Simplex entropy with
+// x_i >= 0 sum_i x_i <= bound
+// Also known as cateborical entropy or multinomial Shannon entropy
+class SimplexIntEntropy : public ADEntropy
+{
+   const real_t &scale;
+public:
+   SimplexIntEntropy(int width, Evaluator::param_t bound)
+      : ADEntropy(width, 1), scale(*evaluator.val.GetData())
+   {
+      evaluator.Add(bound);
+      MFEM_VERIFY(evaluator.val.GetBlock(0).Size() == 1,
+                  "SimplexEntropy: The provided bound has the wrong size. "
+                  "Expected 1, got " << evaluator.val.GetBlock(0).Size());
+   }
+
+   void ProcessParameters(const BlockVector &x) const override
+   {
+      MFEM_ASSERT(scale >= 0, "SimplexEntropy: bound must be non-negative");
+   }
+   AD_IMPL(T, V, M, x,
+   {
+      T sum_exp = exp(T());
+      for (int i=0; i<x.Size(); i++)
+      {
+         sum_exp += exp(x[i]);
+      }
+      return scale*log(sum_exp);
+   });
+};
+
 
 class PolytopalEntropy : public ADEntropy
 {
