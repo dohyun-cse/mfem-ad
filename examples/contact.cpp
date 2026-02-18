@@ -1,4 +1,4 @@
-/// Example 5: AD Gradeint Obstacle Problem with PG
+/// Example 4: AD Obstacle Problem with PG
 #include "mfem.hpp"
 #include "logger.hpp"
 #include "ad_intg.hpp"
@@ -9,12 +9,49 @@ using namespace std;
 using namespace mfem;
 
 
-struct ObstacleEnergy : public ADFunction
+class ElasticityEnergy : public ADFunction
 {
-   ObstacleEnergy(int dim) : ADFunction(dim) {}
+   const int dim;
+   mutable real_t lambda, mu;
+public:
+   ElasticityEnergy(int dim,
+                    Evaluator::param_t lambda,
+                    Evaluator::param_t mu)
+      : ADFunction(dim*dim, 2)
+      , dim(dim)
+   {
+      evaluator.Add(lambda);
+      evaluator.Add(mu);
+   }
+
+   void ProcessParameters(const BlockVector &param) const override
+   {
+      lambda = param[0];
+      mu = param[1];
+   }
+
    AD_IMPL(T, V, M, x,
    {
-      return x*x*0.5;
+      T result = {};
+      M strain(dim, dim);
+      T trace = {};
+      for (int i=0; i<dim; i++)
+      {
+         for (int j=0; j<dim; j++)
+         {
+            strain(i,j) = 0.5*(x[i*dim + j] + x[j*dim + i]);
+         }
+         trace += strain(i,i);
+      }
+      for (int i=0; i<dim; i++)
+      {
+         for (int j=0; j<dim; j++)
+         {
+            result += mu*strain(i,j)*strain(i,j);
+         }
+      }
+      result += 0.5*lambda*trace*trace;
+      return result*0.5;
    });
 };
 
@@ -29,11 +66,10 @@ int main(int argc, char *argv[])
    std::stringstream filename;
    filename << "ad-obstacle-";
    int rule_type = PGStepSizeRule::RuleType::CONSTANT;
-   real_t max_alpha = 1e06;
+   real_t max_alpha = 1e04;
    real_t alpha0 = 1.0;
    real_t ratio = 1.0;
    real_t ratio2 = 1.0;
-   bool use_iterative = false;
 
    int order = 2;
    int ref_levels = 3;
@@ -60,12 +96,8 @@ int main(int argc, char *argv[])
    args.AddOption(&paraview, "-pv", "--paraview",
                   "-no-pv", "--no-paraview",
                   "Enable Paraview Export. Default is false");
-   args.AddOption(&use_iterative, "-gmres", "--preconditioned-gmres",
-                  "-mumps", "--MUMPS",
-                  "Use preconditioned GMRES or MUMPS as linear solver. Default is MUMPS");
    args.ParseCheck();
    if (myid != 0) { out.Disable(); }
-   MFEMInitializePetsc(NULL,NULL,"../src/pgpetsc",NULL);
 
    PGStepSizeRule alpha_rule(rule_type, alpha0, max_alpha, ratio, ratio2);
 
@@ -85,16 +117,19 @@ int main(int argc, char *argv[])
    Array<int> is_bdr_ess2(numBdrAttr);
    is_bdr_ess2 = 0;
    Array<Array<int>*> is_bdr_ess{&is_bdr_ess1, &is_bdr_ess2};
-   FunctionCoefficient load_cf([](const Vector &x)
+   VectorFunctionCoefficient load_cf(dim, [](const Vector &x, Vector &y)
    {
-      return 2*M_PI * M_PI * std::sin(M_PI * x(0)) * std::sin(M_PI * x(1));
+      y(0) = 2*M_PI * M_PI * std::sin(M_PI * x(0)) * std::sin(M_PI * x(1));
+      y(1) = 2*M_PI * M_PI * std::sin(M_PI * x(0)) * std::sin(M_PI * x(1));
    });
-   ObstacleEnergy obj_energy(dim);
+   real_t lambda = 1.0;
+   real_t mu = 1.0;
+   ElasticityEnergy obj_energy(dim, lambda, mu);
 
-   H1_FECollection primal_fec(order, dim);
-   H1_FECollection latent_fec(order-1, dim);
-   ParFiniteElementSpace primal_fes(&mesh, &primal_fec);
-   ParFiniteElementSpace latent_fes(&mesh, &latent_fec, dim);
+   H1_FECollection primal_fec(order+1, dim);
+   L2_FECollection latent_fec(order-1, dim);
+   ParFiniteElementSpace primal_fes(&mesh, &primal_fec, dim);
+   ParFiniteElementSpace latent_fes(&mesh, &latent_fec);
    QuadratureSpace visspace(&mesh, order+3);
    const IntegrationRule &ir = IntRules.Get(Geometry::Type::SQUARE, 3*order + 3);
 
@@ -115,9 +150,7 @@ int main(int argc, char *argv[])
    latent = 0.0; latent.ParallelAssemble(x_and_latent.GetBlock(1));
    latent_k = 0.0; latent_k.SetTrueVector();
 
-   FunctionCoefficient bound([](const Vector &x)
-   { return 0.1 + 0.2*x[0] + 0.4*x[1]; });
-   HellingerEntropy entropy(dim, &bound);
+   ShannonEntropy entropy(0.5, -1);
 
    DifferentiableCoefficient entropy_cf(entropy);
    entropy_cf.AddInput(&latent);
@@ -128,12 +161,12 @@ int main(int argc, char *argv[])
 
    ParGridFunction lambda(latent), lambda_prev(latent);
    lambda = 0.0;
-   VectorGridFunctionCoefficient lambda_prev_cf(&lambda_prev);
+   GridFunctionCoefficient lambda_prev_cf(&lambda_prev);
 
    Array<ParFiniteElementSpace*> fespaces{&primal_fes, &latent_fes};
    ParBlockNonlinearForm bnlf(fespaces);
-   constexpr ADEval u_mode = ADEval::GRAD;
-   constexpr ADEval latent_mode = ADEval::VALUE | ADEval::VECTOR;
+   constexpr ADEval u_mode = ADEval::VALUE | ADEval::GRAD;
+   constexpr ADEval latent_mode = ADEval::VALUE;
    bnlf.AddDomainIntegrator(
       new ADBlockNonlinearFormIntegrator<u_mode, latent_mode>(
          pg_functional, &ir)
@@ -149,33 +182,20 @@ int main(int argc, char *argv[])
 
    Array<Vector*> rhs_list{&rhs.GetBlock(0), &rhs.GetBlock(1)};
    bnlf.SetEssentialBC(is_bdr_ess, rhs_list);
+   ParMonolithicBlockNonlinearFormWrapper bnlf_wrapper(bnlf);
 
-   // MUMPSMonoSolver lin_solver(comm);
-   std::unique_ptr<Solver> lin_solver;
-   std::unique_ptr<NewtonLinearSolverMonitor> lin_monitor;
-   std::unique_ptr<Operator> petsc_bnlf;
-   if (use_iterative)
-   {
-      auto petsc_solver = std::make_unique<PetscLinearSolver>(comm);
-      petsc_solver->SetMaxIter(1e04);
-      lin_monitor = std::make_unique<NewtonLinearSolverMonitor>(*petsc_solver);
-      lin_monitor->SetPrefix(2);
-      lin_solver = std::move(petsc_solver);
-      petsc_bnlf = std::make_unique<PetscOperatorWrapper>(comm, bnlf);
-   }
-   else
-   {
-      lin_solver = std::make_unique<MUMPSMonoSolver>(comm);
-   }
+#ifndef MFEM_USE_MUMPS
+#error "MUMPS is required to run this example."
+#endif
+   MUMPSSolver lin_solver(comm);
    NewtonSolver solver(comm);
-   if (lin_monitor) { solver.SetMonitor(*lin_monitor); }
-   solver.SetSolver(*lin_solver);
-   solver.SetOperator(petsc_bnlf ? *petsc_bnlf : bnlf);
+   solver.SetSolver(lin_solver);
+   solver.SetOperator(bnlf_wrapper);
    IterativeSolver::PrintLevel print_level;
    solver.SetPrintLevel(print_level);
-   solver.SetAbsTol(1e-07);
+   solver.SetAbsTol(1e-09);
    solver.SetRelTol(0.0);
-   solver.SetMaxIter(50);
+   solver.SetMaxIter(20);
    solver.iterative_mode = true;
 
    GLVis glvis("localhost", 19916, 400, 350, 3);
@@ -187,7 +207,7 @@ int main(int argc, char *argv[])
    real_t lambda_diff = infinity();
    for (int i=0; i<100; i++)
    {
-      alpha = alpha_rule.Get(i);
+      // alpha = alpha_rule.Get(i);
       out << "PG iteration " << i + 1 << " with alpha=" << alpha << std::endl;
       latent_k = latent;
       latent_k.SetTrueVector();
@@ -204,17 +224,17 @@ int main(int argc, char *argv[])
 
       glvis.Update();
 
-      subtract(latent, latent_k, lambda);
-      lambda *= 1.0 / pg_functional.GetAlpha();
+      // subtract(latent, latent_k, lambda);
+      // lambda *= 1.0 / pg_functional.GetAlpha();
 
-      if ((lambda_diff = lambda.ComputeL1Error(lambda_prev_cf)) < 1e-8)
-      {
-         out << "  The dual variable, (psi - psi_k)/alpha, converged" << std::endl;
-         out << "PG Converged in " << i + 1
-             << " with final Lambda difference: " << lambda_diff << std::endl;
-         break;
-      }
-      else
+      // if ((lambda_diff = lambda.ComputeL1Error(lambda_prev_cf)) < 1e-8)
+      // {
+      //    out << "  The dual variable, (psi - psi_k)/alpha, converged" << std::endl;
+      //    out << "PG Converged in " << i + 1
+      //        << " with final Lambda difference: " << lambda_diff << std::endl;
+      //    break;
+      // }
+      // else
       {
          out << "  Newton converged in " << solver.GetNumIterations()
              << " with residual " << solver.GetFinalNorm() << std::endl;

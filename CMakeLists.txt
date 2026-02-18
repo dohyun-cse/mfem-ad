@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)  # Use strict C++ standard
+# 1. Setup build type (defaults to release)
+if (NOT DEFINED CMAKE_BUILD_TYPE)
+  # default build type is Release
+  set(CMAKE_BUILD_TYPE "Release")
+endif()
 # Ensure MPI is found before including MFEM
 # If serial, comment out the following line
 project(MyApp)
@@ -36,11 +41,6 @@ set(EXECUTABLES
 ##---------------------------------------------------------------
 
 #--------------------------------------------------------------
-# 1. Setup build type (defaults to release)
-if (NOT DEFINED CMAKE_BUILD_TYPE)
-  # default build type is Release
-  set(CMAKE_BUILD_TYPE "Release")
-endif()
 
 #--------------------------------------------------------------
 # 2. MFEM configuration

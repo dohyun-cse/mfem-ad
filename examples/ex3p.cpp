@@ -2,8 +2,6 @@
 #include "mfem.hpp"
 #include "logger.hpp"
 #include "ad_intg.hpp"
-#include <fem/bilininteg.hpp>
-#include <mesh/element.hpp>
 
 using namespace std;
 using namespace mfem;
@@ -11,11 +9,17 @@ using namespace mfem;
 
 int main(int argc, char *argv[])
 {
+   Mpi::Init();
+   int num_procs = Mpi::WorldSize();
+   int myid = Mpi::WorldRank();
+   Hypre::Init();
+   MPI_Comm comm = MPI_COMM_WORLD;
+
    // file name to be saved
    std::stringstream filename;
    filename << "ad-elasticity-";
 
-   int order = 1;
+   int order = 2;
    int ref_levels = 3;
    bool visualization = false;
    bool paraview = false;
@@ -33,8 +37,9 @@ int main(int argc, char *argv[])
    args.ParseCheck();
 
    // Mesh mesh = rhs_fun_circle
-   Mesh mesh = Mesh::MakeCartesian2D(30, 10,
-                                     Element::QUADRILATERAL, false, 3.0, 1.0);
+   Mesh ser_mesh = Mesh::MakeCartesian2D(30, 10,
+                                         Element::QUADRILATERAL, false, 3.0, 1.0);
+   ParMesh mesh(MPI_COMM_WORLD, ser_mesh);
    const int dim = mesh.Dimension();
    for (int i = 0; i < ref_levels; i++)
    {
@@ -47,8 +52,9 @@ int main(int argc, char *argv[])
    });
 
    H1_FECollection fec(order, dim);
-   FiniteElementSpace fes(&mesh, &fec, dim, Ordering::byNODES);
-   FiniteElementSpace fes_scalar(&mesh, &fec);
+   ParFiniteElementSpace fes(&mesh, &fec, dim);
+   ParFiniteElementSpace fes_scalar(&mesh, &fec);
+
    Array<int> is_bdr_ess(mesh.bdr_attributes.Max());
    is_bdr_ess = 0;
    is_bdr_ess[3] = 1;
@@ -56,45 +62,42 @@ int main(int argc, char *argv[])
    fes.GetEssentialTrueDofs(is_bdr_ess, ess_tdof_list);
 
    real_t E(1.0), nu(0.3);
-   real_t lambda(E*nu / ((1.0 + nu) * (1.0 - 2.0*nu))), mu(E / (2.0 * (1.0 + nu)));
+   real_t lambda(E*nu / (1.0 - nu*nu));
+   real_t mu(E / (2.0 * (1.0 + nu)));
    LinearElasticityEnergy energy(dim, lambda, mu);
 
-   NonlinearForm nlf(&fes);
-   IntegrationRule ir = IntRules.Get(Element::QUADRILATERAL, order*2 + 10);
+   ParNonlinearForm nlf(&fes);
    nlf.AddDomainIntegrator(
-      new ADNonlinearFormIntegrator<ADEval::GRAD | ADEval::VECTOR>(energy, &ir));
-   LinearForm load(&fes);
+      new ADNonlinearFormIntegrator<ADEval::GRAD | ADEval::VECTOR>(energy));
+   nlf.SetEssentialBC(is_bdr_ess);
+
+   ParLinearForm load(&fes);
    load.AddDomainIntegrator(new VectorDomainLFIntegrator(load_cf));
    load.Assemble();
+   HypreParVector x(&fes), b(&fes);
+   load.ParallelAssemble(b);
 
-   GridFunction u(&fes);
-   u = 0.0;
-   GridFunction ux(&fes_scalar, u.GetData());
-   GridFunction uy(&fes_scalar, u.GetData() + fes_scalar.GetVSize());
-   SparseMatrix &op = static_cast<SparseMatrix&>(nlf.GetGradient(u));
+   ParGridFunction u(&fes); u = 0.0;
+   u.GetTrueDofs(x);
+   ParGridFunction ux(&fes_scalar, u.GetData());
+   ParGridFunction uy(&fes_scalar, u.GetData() + fes_scalar.GetVSize());
 
-   // BilinearForm a(&fes);
-   // ConstantCoefficient lambda_cf(lambda), mu_cf(mu);
-   // a.AddDomainIntegrator(new ElasticityIntegrator(lambda_cf, mu_cf));
-   // a.Assemble();
-   // SparseMatrix &A_mat = a.SpMat();
-   //
-   // out << op.MaxNorm() << std::endl;
-   // op.Add(-1.0, A_mat);
-   // out << op.MaxNorm() << std::endl;
-
-   op.AddMult(u, load, -1.0);
-   op.EliminateBC(ess_tdof_list, Operator::DiagonalPolicy::DIAG_ONE);
-   CGSolver lin_solver;
-   GSSmoother prec;
+   CGSolver lin_solver(comm);
+   HypreBoomerAMG prec;
+   prec.SetPrintLevel(0);
    lin_solver.SetPreconditioner(prec);
-   lin_solver.SetOperator(op);
-   lin_solver.SetRelTol(1e-12);
-   lin_solver.SetAbsTol(0.0);
-   lin_solver.SetMaxIter(1e04);
-   lin_solver.Mult(load, u);
-   out << u.Min() << ", " << u.Max() << std::endl;
+   lin_solver.SetPrintLevel(0);
+   lin_solver.SetRelTol(1e-09);
+   lin_solver.SetAbsTol(1e-12);
+   lin_solver.SetMaxIter(1e08);
 
+   NewtonSolver solver(comm);
+   solver.SetSolver(lin_solver);
+   solver.SetOperator(nlf);
+   solver.SetPrintLevel(2);
+   b.SetSubVector(ess_tdof_list, 0.0);
+   solver.Mult(b, x);
+   u.SetFromTrueDofs(x);
 
    GLVis glvis("localhost", 19916);
    glvis.Append(ux, "ux", "Rjc");

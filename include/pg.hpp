@@ -7,10 +7,9 @@
 namespace mfem
 {
 
-using mfem::Mult;
 template <typename T>
-void Mult(const DenseMatrix &A, const TAutoDiffVector<T> &x,
-          TAutoDiffVector<T> &y)
+inline void Mult(const DenseMatrix &A, const TAutoDiffVector<T> &x,
+                 TAutoDiffVector<T> &y)
 {
    y.SetSize(A.Height());
    y = T();
@@ -23,11 +22,12 @@ void Mult(const DenseMatrix &A, const TAutoDiffVector<T> &x,
       }
    }
 }
-
+inline void Mult(const DenseMatrix &A, const Vector &x, Vector &y)
+{ A.Mult(x, y); }
 
 template <typename T>
-void MultTranspose(const DenseMatrix &A, const TAutoDiffVector<T> &x,
-                   TAutoDiffVector<T> &y)
+inline void MultTranspose(const DenseMatrix &A, const TAutoDiffVector<T> &x,
+                          TAutoDiffVector<T> &y)
 {
    y.SetSize(A.Width());
    for (int j = 0; j < A.Width(); j++)
@@ -40,8 +40,7 @@ void MultTranspose(const DenseMatrix &A, const TAutoDiffVector<T> &x,
    }
 }
 
-
-void MultTranspose(const DenseMatrix &A, const Vector &x, Vector &y)
+inline void MultTranspose(const DenseMatrix &A, const Vector &x, Vector &y)
 { A.MultTranspose(x, y); }
 
 
@@ -421,20 +420,18 @@ public:
       return scale*(maxval + log(sum_exp));
    });
 };
-//
-// Dual entropy for (negative) Simplex entropy with
-// x_i >= 0 sum_i x_i <= bound
-// Also known as cateborical entropy or multinomial Shannon entropy
-class SimplexIntEntropy : public ADEntropy
+
+// Simplex entropy with right corner at the origin.
+class RightSimplexEntropy : public ADEntropy
 {
    const real_t &scale;
 public:
-   SimplexIntEntropy(int width, Evaluator::param_t bound)
+   RightSimplexEntropy(int width, Evaluator::param_t bound)
       : ADEntropy(width, 1), scale(*evaluator.val.GetData())
    {
       evaluator.Add(bound);
       MFEM_VERIFY(evaluator.val.GetBlock(0).Size() == 1,
-                  "SimplexEntropy: The provided bound has the wrong size. "
+                  "RightSimplexEntropy: The provided bound has the wrong size. "
                   "Expected 1, got " << evaluator.val.GetBlock(0).Size());
    }
 
@@ -444,88 +441,68 @@ public:
    }
    AD_IMPL(T, V, M, x,
    {
-      T sum_exp = exp(T());
-      for (int i=0; i<x.Size(); i++)
+      T sum_exp = exp(x[0]);
+      for (int i=1; i<x.Size(); i++)
       {
          sum_exp += exp(x[i]);
       }
-      return scale*log(sum_exp);
+      return scale*(1.0 + log(sum_exp));
    });
 };
 
-
 class PolytopalEntropy : public ADEntropy
 {
-   const int dim;
-   const int num_verts;
-   const DenseMatrix vertex;
-   mutable Vector Vx;
+   DenseMatrix vertices; // V - v_0, Shifted vertex
+   Vector v0; // corresponding to the first vertex
+   RightSimplexEntropy simplex_entropy;
 public:
-   PolytopalEntropy(const int dim_, const int num_verts_,
-                    Evaluator::param_t vertex_)
-      : ADEntropy(dim_, dim_*num_verts_)
-      , dim(dim_)
-      , num_verts(num_verts_)
-      , vertex(evaluator.val.GetBlock(0).GetData(), dim, num_verts)
-      , Vx(num_verts)
+   PolytopalEntropy(const DenseMatrix &V)
+      :ADEntropy(V.Height(), 1)
+      , vertices(V.Height(), V.Width()-1)
+      , simplex_entropy(V.Width(), 1.0)
    {
-      evaluator.Add(vertex_);
-   }
-   PolytopalEntropy(const DenseMatrix &vertex_)
-      : PolytopalEntropy(vertex_.Height(), vertex_.Width(), &vertex_)
-   { }
-
-   real_t operator()(const Vector &x) const override
-   {
-      vertex.MultTranspose(x, Vx);
-      real_t maxval = Vx.Max();
-      real_t sum_exp = 0.0;
-      for (auto &v : Vx) { sum_exp += exp(v - maxval); }
-      return maxval + log(sum_exp);
-   }
-
-   void Gradient(const Vector &x, Vector &J,
-                 int start=0, int end=-1) const override
-   {
-      MFEM_ASSERT(start == 0,
-                  "PolytopalEntropy::Gradient: start must be 0");
-      MFEM_ASSERT(end == -1 || end == vertex.Height(),
-                  "PolytopalEntropy::Gradient: end must be -1 or equal to vertex.Height()");
-      vertex.MultTranspose(x, Vx);
-      real_t maxval = Vx.Max();
-      real_t sum_exp = 0.0;
-      for (int i=0; i<vertex.Height(); i++)
+      V.GetColumn(0, v0);
+      vertices.CopyCols(V, 1, V.Width());
+      Vector vert;
+      for (int i=0; i<vertices.Width(); i++)
       {
-         Vx[i] = std::exp(Vx[i] - maxval);
-         sum_exp += Vx[i];
+         vertices.GetColumnReference(i, vert);
+         vert -= v0;
       }
-      Vx /= sum_exp;
-      J.SetSize(vertex.Height());
-      vertex.Mult(Vx, J);
    }
-   std::unique_ptr<VectorCoefficient> BarycentricCoordinate(
-      ParGridFunction &psi) const
+
+   AD_IMPL(T, V, M, x,
    {
-      return std::make_unique<MappedVectorGridFunctionCoefficient>
-             (vertex.Width(), &psi, [this](const Vector &x, Vector &lambda)
-      {
-         MFEM_ASSERT(start == 0,
-                     "PolytopalEntropy::Gradient: start must be 0");
-         MFEM_ASSERT(end == -1 || end == vertex.Height(),
-                     "PolytopalEntropy::Gradient: end must be -1 or equal to vertex.Height()");
-         lambda.SetSize(vertex.Width());
-         this->vertex.MultTranspose(x, lambda);
-         real_t maxval = lambda.Max();
-         real_t sum_exp = 0.0;
-         for (int i=0; i<this->vertex.Height(); i++)
-         {
-            lambda[i] = std::exp(lambda[i] - maxval);
-            sum_exp += lambda[i];
-         }
-         lambda /= sum_exp;
-      });
-   }
+      V Vx(vertices.Width());
+      Mult(vertices, x, Vx);
+      return simplex_entropy(Vx) + (x*v0);
+   })
 };
+
+class AffineTranslatedEntropy : public ADEntropy
+{
+   const ADEntropy &base_entropy;
+   DenseMatrix A_T;
+   Vector b;
+
+public:
+   AffineTranslatedEntropy(
+      const ADEntropy &base, const DenseMatrix &A_, const Vector &b_)
+      : ADEntropy(A_.Height()), base_entropy(base), A_T(A_), b(b_)
+   {
+      MFEM_VERIFY(A_.Width() == base.width,
+                  "AffineTranslatedEntropy: A width must match base entropy width: "
+                  << A_.Width() << " != " << base.width);
+      A_T.Transpose();
+   }
+   AD_IMPL(T, V, M, x,
+   {
+      V Ax(A_T.Height());
+      Mult(A_T, x, Ax);
+      return base_entropy(Ax) + (x*b);
+   })
+};
+
 
 class PGPreconditioner : public Solver
 {

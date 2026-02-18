@@ -5,7 +5,6 @@
 #include "tools.hpp"
 #include "pg.hpp"
 #include "diffobj.hpp"
-#include "mmto.hpp"
 
 using namespace std;
 using namespace mfem;
@@ -26,12 +25,6 @@ int main(int argc, char *argv[])
    // file name to be saved
    std::stringstream filename;
    filename << "ad-mmto-cantilever-";
-   // int rule_type = PGStepSizeRule::RuleType::CONSTANT;
-   // real_t max_alpha = 1e06;
-   // real_t alpha0 = 1.0;
-   // real_t ratio = 1.0;
-   // real_t ratio2 = 1.0;
-   // bool use_iterative = false;
 
    bool prefilter = true;
    bool postfilter = false;
@@ -287,7 +280,6 @@ int main(int argc, char *argv[])
       latent_k = latent;
       gradient_k = gradient;
       obj_k = obj;
-      // out << "Step " << i << " with " << step_size << std::endl;
       grad_f(gradient);
       for (reeval=0; reeval<20; reeval++)
       {
